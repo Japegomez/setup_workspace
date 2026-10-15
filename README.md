@@ -13,7 +13,7 @@ npx skills add Japegomez/cursor_skills
 En el chat de Cursor, ejecuta este comando:
 
 ```text
-/add-plugin asana context7-plugin continual-learning cursor-team-kit devtools-for-agents docs-canvas gamma github gitlab google-calendar google-docs google-sheets google-slides higgsfield posthog pr-review-canvas sentry supabase teaching thermos
+/add-plugin asana context-mode https://github.com/mksglu/context-mode context7-plugin continual-learning cursor-team-kit devtools-for-agents docs-canvas gamma github gitlab google-calendar google-docs google-sheets google-slides higgsfield posthog pr-review-canvas sentry supabase teaching thermos
 ```
 
 ## RTK en Cursor
