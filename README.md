@@ -10,9 +10,35 @@ npx skills add Japegomez/cursor_skills
 
 ## Plugins
 
-Los plugins se instalan con la skill `/add-plugin`. En el chat de Cursor, ejecútala y pega este repositorio:
+Los plugins se instalan con la skill `/add-plugin`. En el chat de Cursor, ejecútala, pega este repositorio y elige estos nombres:
 
 https://github.com/cursor/plugins
+
+- continual-learning
+- cursor-team-kit
+- docs-canvas
+- gamma
+- github
+- google-calendar
+- google-docs
+- google-sheets
+- google-slides
+- pr-review-canvas
+- teaching
+- thermos
+
+Estos otros se instalan por nombre:
+
+```text
+/add-plugin asana
+/add-plugin context7-plugin
+/add-plugin devtools-for-agents
+/add-plugin gitlab
+/add-plugin higgsfield
+/add-plugin posthog
+/add-plugin sentry
+/add-plugin supabase
+```
 
 ## RTK en Cursor
 
