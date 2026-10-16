@@ -8,6 +8,12 @@ Skills de agente para Cursor. En otro equipo, instala las skills desde este repo
 npx skills add Japegomez/cursor_skills
 ```
 
+Desde la raíz del proyecto, [Impeccable](https://github.com/pbakaus/impeccable) instala su lenguaje de diseño para que el agente diseñe interfaces con más criterio:
+
+```bash
+npx impeccable install
+```
+
 
 ## Plugins
 
