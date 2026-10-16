@@ -8,14 +8,13 @@ Skills de agente para Cursor. En otro equipo, instala las skills desde este repo
 npx skills add Japegomez/cursor_skills
 ```
 
-Incluye `archify` (diagramas de arquitectura, flujos, secuencias y ciclos de vida) y `find-skills` (buscar skills instalables).
 
 ## Plugins
 
 En el chat de Cursor, ejecuta este comando:
 
 ```text
-/add-plugin asana context-mode https://github.com/mksglu/context-mode context7-plugin continual-learning cursor-team-kit devtools-for-agents docs-canvas gamma github gitlab google-calendar google-docs google-sheets google-slides higgsfield posthog pr-review-canvas sentry supabase teaching thermos
+/add-plugin asana context-mode context7-plugin continual-learning cursor-team-kit devtools-for-agents docs-canvas gamma github gitlab google-calendar google-docs google-sheets google-slides higgsfield posthog pr-review-canvas sentry supabase teaching thermos
 ```
 
 - **asana** — tareas, proyectos y comentarios de Asana.
@@ -57,25 +56,9 @@ rtk init -g --agent cursor      # Cursor
 
 Da al agente acceso a web, GitHub, YouTube, RSS y otros canales. La comprobación por defecto no cambia el sistema. `--system` instala dependencias que falten y hay que pedirlo aparte. Los canales opcionales (Twitter, Reddit, Xiaohongshu, etc.) tampoco se instalan solos.
 
-En esta máquina Python está protegido por PEP 668, así que se usa un entorno virtual:
+Pegar en el agente de IA:
 
 ```bash
-python3 -m venv ~/.agent-reach-venv
-source ~/.agent-reach-venv/bin/activate
-pip install https://github.com/Panniantong/agent-reach/archive/main.zip
-agent-reach install --env=auto
-```
+en帮我安装 Agent Reach：https://raw.githubusercontent.com/Panniantong/agent-reach/main/docs/install.md
 
-Si `pipx` está disponible:
-
-```bash
-pipx install https://github.com/Panniantong/agent-reach/archive/main.zip
-agent-reach install --env=auto
-```
-
-Después de aprobar cambios de sistema:
-
-```bash
-agent-reach install --env=auto --system
-agent-reach doctor
 ```
