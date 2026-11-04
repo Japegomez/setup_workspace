@@ -1,118 +1,303 @@
-# cursor_skills
+# Tutorial: configurar un workspace agéntico desde cero
 
-Skills de agente para Cursor. En otro equipo, instala las skills desde este repositorio y el resto con los pasos de abajo.
+Guía paso a paso para crear un **workspace y un repositorio nuevos** preparados para desarrollar con agentes de IA. Cada herramienta tiene instrucciones para **cualquier IDE/agente** (Claude Code, Codex, Copilot, Windsurf, OpenCode…) y una sección concreta para **Cursor**.
 
-## Skills
+Los pasos siguen un orden lógico **de menor a mayor importancia** en el desarrollo de software: primero lo opcional y de consulta (elegir modelo, gateways, acceso web), después lo que ahorra tokens y amplía el agente, luego seguridad y revisión, y al final lo que más impacto tiene en la calidad del software: las rules del proyecto (`AGENTS.md`) y el desarrollo guiado por especificación (SDD).
+
+> Basado en la *Guía de uso de IA en el desarrollo* (secciones 3.5, 5, 6, 7, 8 y 12). Trata cada herramienta de terceros como una dependencia: revisa permisos, licencia y qué datos envía antes de instalarla (ver paso 9).
+
+## Índice
+
+0. [Requisitos y nuevo repositorio](#0-requisitos-y-nuevo-repositorio)
+1. [Comparar modelos](#1-comparar-modelos)
+2. [OmniRoute: gateway multi-proveedor](#2-omniroute-gateway-multi-proveedor)
+3. [Agent Reach: acceso a web y canales](#3-agent-reach-acceso-a-web-y-canales)
+4. [Plugins](#4-plugins)
+5. [Skills de este repositorio](#5-skills-de-este-repositorio)
+6. [Caveman: salida más corta](#6-caveman-salida-más-corta)
+7. [RTK y Context Mode: menos ruido en el contexto](#7-rtk-y-context-mode-menos-ruido-en-el-contexto)
+8. [Graphify: mapa del codebase](#8-graphify-mapa-del-codebase)
+9. [Seguridad: SkillSpector y MCP-Scan](#9-seguridad-skillspector-y-mcp-scan)
+10. [CodeRabbit: revisión automática](#10-coderabbit-revisión-automática)
+11. [`AGENTS.md`: las rules del proyecto](#11-agentsmd-las-rules-del-proyecto)
+12. [Desarrollo guiado por especificación (SDD)](#12-desarrollo-guiado-por-especificación-sdd)
+13. [Checklist final](#13-checklist-final)
+
+---
+
+## 0. Requisitos y nuevo repositorio
+
+Varias herramientas dependen de **Git**, **Node.js 22.13+** (Caveman, OmniRoute, Context Mode, `npx skills`) y **Python + uv** (Graphify, SkillSpector, MCP-Scan).
 
 ```bash
-npx skills add Japegomez/cursor_skills
+# macOS / Linux
+brew install git node gh
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Desde la raíz del proyecto, [Impeccable](https://github.com/pbakaus/impeccable) instala su lenguaje de diseño para que el agente diseñe interfaces con más criterio:
+```powershell
+# Windows
+winget install Git.Git OpenJS.NodeJS.LTS GitHub.cli
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Crea el workspace y el repositorio:
 
 ```bash
-npx impeccable install
+mkdir mi-proyecto && cd mi-proyecto
+git init -b main
+mkdir -p docs/specs
+touch AGENTS.md README.md .gitignore
+gh repo create mi-proyecto --private --source . --remote origin   # o el equivalente en GitLab
 ```
 
+Estructura objetivo al terminar el tutorial:
 
-## Plugins
+```text
+mi-proyecto/
+├── AGENTS.md                 # rules del proyecto (paso 11)
+├── .coderabbit.yaml          # reglas de revisión (paso 10)
+├── .cursor/rules/            # solo Cursor: graphify.mdc, context-mode.mdc
+├── docs/specs/               # paquete SDD (paso 12)
+│   ├── PRD.md
+│   ├── TRD.md
+│   ├── appflow.md
+│   ├── ui-ux.md
+│   ├── backend-schema.md
+│   └── implementation-plan.md
+└── graphify-out/             # grafo del codebase (paso 8)
+```
 
-En el chat de Cursor, ejecuta este comando:
+**Cursor:** abre la carpeta con **File → Open Folder** (o `cursor .`). Cursor guarda su configuración de proyecto en `.cursor/` (rules, `mcp.json`, `hooks.json`); la global vive en `~/.cursor/`.
+
+---
+
+## 1. Comparar modelos
+
+No se instala nada, pero conviene elegir modelo antes de empezar. Los mejores modelos cambian cada semana: consulta las comparativas a menudo en lugar de memorizar un ranking.
+
+| Sitio | Enfoque | Úsalo para |
+|---|---|---|
+| [Artificial Analysis](https://artificialanalysis.ai/models) | Índice de inteligencia, velocidad y precio por proveedor | Separar familias (ligero / medio / frontera) y ver la latencia real del endpoint |
+| [LLM Stats](https://llm-stats.com/) | Leaderboard de 300+ modelos con ejes Reasoning, Coding, Agent, contexto, velocidad y precio | Filtrar por **coding** o **agent**, comparar open-source y propietario, ver coste $/M |
+| [Arena](https://arena.ai/leaderboard) | Ranking por votación humana a ciegas (antes LMArena) | Ver la preferencia real de usuarios en la categoría de **código** |
+
+Cómo decidir: prioriza las columnas de coding y agent frente a un índice genérico, compara el precio por **tarea típica** (un modelo barato con cinco reintentos sale caro) y desconfía de benchmarks sin versión ni fecha. La mejor comparativa es probarlos en tu stack con tus propias tareas.
+
+**Cualquier IDE:** el selector de modelo de cada harness (Claude Code `/model`, Codex `--model`, Copilot en el chat).
+
+**Cursor:** selector de modelo del chat. Activa solo los modelos que uses en **Settings → Models**. Sube el *effort/thinking* para bugs difíciles o planes ambiguos; si el mismo modelo falla dos veces seguidas, cambia de modelo en lugar de seguir subiendo effort.
+
+---
+
+## 2. OmniRoute: gateway multi-proveedor
+
+[OmniRoute](https://github.com/diegosouzapw/OmniRoute) es un gateway open-source (MIT) que expone **un único endpoint compatible con OpenAI** y enruta a cientos de proveedores, muchos con tier gratuito. Hace *fallback* automático cuando se agota una cuota y tiene estrategias de enrutado por coste, latencia o capacidad. Es opcional: útil cuando el coste frena la adopción.
+
+**Instalación (cualquier sistema):**
+
+```bash
+npm install -g omniroute
+omniroute            # arranca dashboard + API en http://localhost:20128
+```
+
+Con Docker:
+
+```bash
+docker run -d --name omniroute --restart unless-stopped --stop-timeout 40 \
+  -e OMNIROUTE_MEMORY_MB=8192 --memory=10g \
+  -p 127.0.0.1:20128:20128 -v omniroute-data:/app/data diegosouzapw/omniroute:latest
+```
+
+Abre el dashboard, conecta proveedores, crea una API key y verifica:
+
+```bash
+curl http://localhost:20128/v1/models -H "Authorization: Bearer TU_KEY"
+```
+
+**Cualquier IDE:** configura el cliente con base URL `http://localhost:20128/v1` y tu key (Claude Code, Codex, Cline, OpenCode y Copilot aceptan endpoints OpenAI-compatibles).
+
+**Cursor:** **Settings → Models → API Keys**, activa *OpenAI API Key*, pega la key de OmniRoute y activa *Override OpenAI Base URL* con `http://localhost:20128/v1`. Cursor hace estas peticiones desde sus servidores: si `localhost` no responde, expón OmniRoute con un túnel (cloudflared, ngrok) protegido por la API key.
+
+> Un tier gratuito sigue siendo un tercero: no envíes código ni datos confidenciales por proveedores cuya retención no hayas revisado.
+
+---
+
+## 3. Agent Reach: acceso a web y canales
+
+[Agent Reach](https://github.com/Panniantong/Agent-Reach) da al agente acceso a web, GitHub, YouTube, RSS y otros canales. La comprobación por defecto **no cambia el sistema**: `agent-reach install` solo revisa el entorno. `--system` instala dependencias y registra la skill, y hay que pedirlo aparte. Los canales con login (Twitter, Reddit, Xiaohongshu…) tampoco se instalan solos: el agente pregunta cuáles quieres.
+
+**Cualquier IDE / Cursor:** pega esto en el chat del agente y él hace el resto:
+
+```text
+帮我安装 Agent Reach：https://raw.githubusercontent.com/Panniantong/agent-reach/main/docs/install.md
+```
+
+Para actualizar:
+
+```text
+帮我更新 Agent Reach：https://raw.githubusercontent.com/Panniantong/agent-reach/main/docs/update.md
+```
+
+Comprobar el estado de cada canal:
+
+```bash
+agent-reach doctor
+```
+
+> Instala la CLI desde el repositorio oficial, no desde PyPI: el paquete homónimo de PyPI no es este proyecto. Desinstalar: `agent-reach uninstall` (borra también tokens y cookies de `~/.agent-reach/`).
+
+---
+
+## 4. Plugins
+
+Un plugin empaqueta skills, rules y servidores MCP listos para usar. El empaquetado es propio de cada IDE (el marketplace de Cursor no es el de Claude Code ni el de Codex), aunque el MCP suele reutilizarse entre entornos.
+
+**Cualquier IDE:**
+
+- **Claude Code:** `/plugin marketplace add <owner/repo>` y después `/plugin install <plugin>`.
+- **Otros (Codex, Copilot, Windsurf…):** instala el servidor MCP equivalente en su configuración (`mcp.json` o similar) desde la documentación de cada integración.
+
+**Cursor:** en el chat ejecuta:
 
 ```text
 /add-plugin asana context-mode context7-plugin continual-learning cursor-team-kit devtools-for-agents docs-canvas gamma github gitlab google-calendar google-docs google-sheets google-slides higgsfield posthog pr-review-canvas sentry supabase teaching thermos
 ```
 
-- **asana** — tareas, proyectos y comentarios de Asana.
-- **context-mode** — reduce el contexto que llega al agente: filtra la salida de herramientas, guarda memoria de la sesión y enruta llamadas.
-- **context7-plugin** — documentación actual de librerías, sacada del repositorio y no del entrenamiento del modelo.
-- **continual-learning** — aprende preferencias y hechos del workspace a partir de las conversaciones.
-- **cursor-team-kit** — flujos de CI, revisión y entrega.
-- **devtools-for-agents** — Chrome DevTools para depurar páginas, red y rendimiento.
-- **docs-canvas** — abre la documentación como un canvas navegable.
-- **gamma** — genera presentaciones, documentos y páginas.
-- **github** — repositorios, issues, pull requests y Actions.
-- **gitlab** — el equivalente para GitLab.
-- **google-calendar** — busca eventos y crea reuniones.
-- **google-docs** — lee y edita documentos.
-- **google-sheets** — lee y escribe hojas de cálculo.
-- **google-slides** — crea y edita presentaciones.
-- **higgsfield** — genera imágenes y vídeo.
-- **posthog** — analítica, feature flags, experimentos y errores.
-- **pr-review-canvas** — muestra el diff de un PR agrupado por importancia.
-- **sentry** — issues y stack traces de Sentry.
-- **supabase** — proyectos, tablas y consultas de Supabase.
-- **teaching** — planes de práctica y retrospectivas de aprendizaje.
-- **thermos** — revisión estricta de una rama: bugs, seguridad y calidad.
+Comprueba en **Settings → Plugins** y **Settings → MCP** que estén activos. Instala solo los que vayas a usar: cada MCP añade herramientas al contexto.
 
-## RTK en Cursor
+| Plugin | Qué hace |
+|---|---|
+| **asana** | Tareas, proyectos y comentarios de Asana. |
+| **context-mode** | Reduce el contexto que llega al agente: filtra la salida de herramientas, guarda memoria de la sesión y enruta llamadas (paso 7). |
+| **context7-plugin** | Documentación actual de librerías, sacada del repositorio y no del entrenamiento del modelo. |
+| **continual-learning** | Aprende preferencias y hechos del workspace a partir de las conversaciones. |
+| **cursor-team-kit** | Flujos de CI, revisión y entrega. |
+| **devtools-for-agents** | Chrome DevTools para depurar páginas, red y rendimiento. |
+| **docs-canvas** | Abre la documentación como un canvas navegable. |
+| **gamma** | Genera presentaciones, documentos y páginas. |
+| **github** / **gitlab** | Repositorios, issues, pull/merge requests y CI. |
+| **google-calendar / docs / sheets / slides** | Agenda, documentos, hojas de cálculo y presentaciones de Google. |
+| **higgsfield** | Genera imágenes y vídeo. |
+| **posthog** | Analítica, feature flags, experimentos y errores. |
+| **pr-review-canvas** | Muestra el diff de un PR agrupado por importancia. |
+| **sentry** | Issues y stack traces de Sentry. |
+| **supabase** | Proyectos, tablas y consultas de Supabase. |
+| **teaching** | Planes de práctica y retrospectivas de aprendizaje. |
+| **thermos** | Revisión estricta de una rama: bugs, seguridad y calidad. |
 
-RTK es un proxy de la terminal. Cuando el agente lanza un comando (`git`, `ls`, tests, logs), el hook lo reescribe a `rtk …` y devuelve un resumen en lugar de la salida completa. El agente conserva la señal y gasta menos contexto.
+---
 
-Elige un método de instalación y después inicia el hook de Cursor.
+## 5. Skills de este repositorio
+
+Una skill es una carpeta con un `SKILL.md` que enseña al agente a ejecutar una tarea concreta (TDD, revisión de código, commits, diseño de UI…). Este repositorio contiene en `skills/` la colección recomendada.
+
+**Cualquier IDE** (el CLI [`skills`](https://skills.sh/) detecta los agentes instalados):
+
+```bash
+npx skills add Japegomez/cursor_skills          # instala la colección
+npx skills add Japegomez/cursor_skills --list   # ver qué skills incluye antes de instalar
+```
+
+**Cursor:** instala de forma global para el agente de Cursor:
+
+```bash
+npx skills add Japegomez/cursor_skills -g -a cursor
+```
+
+Las skills quedan disponibles en el chat como `/nombre-skill` o se activan solas cuando la tarea encaja con su descripción.
+
+Desde la raíz del proyecto, [Impeccable](https://github.com/pbakaus/impeccable) añade un lenguaje de diseño (`/impeccable audit`, `/polish`, `/critique`…) para que el agente diseñe interfaces con más criterio:
+
+```bash
+npx impeccable install
+```
+
+> Antes de instalar skills de terceros, escanéalas con SkillSpector (paso 9).
+
+---
+
+## 6. Caveman: salida más corta
+
+[Caveman](https://github.com/JuliusBrussee/caveman) recorta tokens de salida: respuestas en voz telegráfica (respuesta primero, sin relleno, código y errores literales), salidas de herramientas comprimidas y, opcionalmente, selección de modelo. Ahorra en torno a un 65 % frente a no dar instrucciones y un 35 % extra con `/ultracave` frente a "be concise".
+
+**Cualquier IDE** (instalador unificado, Node.js 22.13+; detecta tus agentes y muestra qué cambia antes de aplicarlo):
+
+```bash
+npx @caveman-ai/cli@latest
+```
+
+```powershell
+# Windows, alternativa
+irm https://raw.githubusercontent.com/JuliusBrussee/caveman/v4.0.1/install.ps1 | iex
+```
+
+Solo la skill de voz corta, sin proxy:
+
+```bash
+npx skills add JuliusBrussee/caveman -g
+```
+
+**Cursor:** instala skills, agentes Cavecrew y el hook de sesión solo para Cursor:
+
+```bash
+npx -y github:JuliusBrussee/caveman -- --only cursor
+```
+
+Uso en el chat: `/caveman` (día a día), `/ultracave` (revisiones masivas), `/caveman-review`, `/caveman-compress`, `/caveman-stats`. Para desactivar: `stop caveman`.
+
+> Si pagas por petición (p. ej. GitHub Copilot), acortar respuestas no ahorra dinero; solo ganas velocidad de lectura.
+
+---
+
+## 7. RTK y Context Mode: menos ruido en el contexto
+
+Las dos herramientas cubren extremos distintos del mismo problema. RTK recorta la salida de los **comandos de terminal** antes de que entre al contexto; Context Mode evita que la salida de **herramientas MCP** y el historial lleguen crudos al modelo.
+
+### RTK
+
+[RTK](https://github.com/rtk-ai/rtk) es un proxy de la terminal (un binario Rust). Cuando el agente lanza `git`, `ls`, tests o logs, un hook reescribe el comando a `rtk …`, que filtra, agrupa, trunca y deduplica la salida. Promete un 60–90 % menos de tokens en comandos habituales.
 
 ```bash
 brew install rtk                                              # macOS / Linux
 winget install rtk-ai.rtk                                     # Windows
 curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
-rtk init -g --agent cursor      # Cursor
+rtk --version && rtk gain    # gain debe mostrar el panel de ahorro
 ```
 
-## Agent Reach
+Existe otro proyecto llamado `rtk` en crates.io: si `rtk gain` da "command not found", tienes el paquete equivocado.
 
-Da al agente acceso a web, GitHub, YouTube, RSS y otros canales. La comprobación por defecto no cambia el sistema. `--system` instala dependencias que falten y hay que pedirlo aparte. Los canales opcionales (Twitter, Reddit, Xiaohongshu, etc.) tampoco se instalan solos.
-
-Pegar en el agente de IA:
+**Cualquier IDE:** inicia el hook de tu agente.
 
 ```bash
-en帮我安装 Agent Reach：https://raw.githubusercontent.com/Panniantong/agent-reach/main/docs/install.md
+rtk init -g                     # Claude Code / Copilot
+rtk init -g --codex             # Codex
+rtk init -g --gemini            # Gemini CLI
+rtk init -g --agent windsurf    # Windsurf
+rtk init --agent cline          # Cline / Roo Code
+rtk init -g --opencode          # OpenCode
 ```
 
-## Graphify
-
-[Graphify](https://github.com/Graphify-Labs/graphify) convierte un proyecto (código, docs, PDFs, imágenes) en un **grafo de conocimiento** local: relaciones entre archivos/conceptos, informe y `graph.html`. El agente consulta el grafo antes de explorar el repo a ciegas.
+**Cursor:**
 
 ```bash
-uv tool install graphifyy          # paquete PyPI oficial (doble y); el CLI es `graphify`
-graphify install --platform cursor # skill + regla .cursor/rules/graphify.mdc
+rtk init -g --agent cursor      # registra un hook preToolUse en hooks.json
 ```
 
-En el chat de Cursor, en la raíz del proyecto:
+### Context Mode
 
-```text
-/graphify .
-```
+[Context Mode](https://github.com/mksglu/context-mode) es un servidor MCP que guarda los datos crudos en un sandbox y solo deja pasar el resultado útil (`ctx_execute`, `ctx_search`…), recuerda la sesión cuando el chat se compacta y obliga a analizar con un pequeño programa en lugar de volcar datos.
 
-Docs: [Graphify + Cursor](https://docs.graphify.com/integrations/cursor).
-
-## Caveman
-
-[Caveman](https://github.com/JuliusBrussee/caveman) reduce tokens: respuestas más cortas, salidas de herramientas comprimidas y (opcional) selección de modelo. En Cursor instala skills, agentes Cavecrew y un hook de sesión.
+**Cualquier IDE:** instala el CLI global y regístralo como servidor MCP en la configuración de tu agente (comando `context-mode`); el README tiene configuraciones para Claude Code, Codex, OpenCode, Copilot, Kiro, Zed y otros.
 
 ```bash
-# Opción completa (recomendado; Node.js 22.13+)
-npx -y github:JuliusBrussee/caveman -- --only cursor
-
-# Solo la skill de voz corta
-npx skills add JuliusBrussee/caveman -g
+npm install -g context-mode
 ```
 
-Windows (PowerShell), instalador unificado:
+**Cursor (opción A, plugin):** `/add-plugin context-mode` cuando aparezca en el Marketplace. Hasta entonces, plugin local + CLI global:
 
 ```powershell
-irm https://raw.githubusercontent.com/JuliusBrussee/caveman/v4.0.1/install.ps1 | iex
-```
-
-En el chat: `/caveman`. Para desactivar: `stop caveman`.
-
-## Context Mode
-
-[Context Mode](https://github.com/mksglu/context-mode) evita que la salida enorme de herramientas llene el contexto: sandbox (`ctx_execute`, etc.), memoria de sesión y hooks de enrutado. Ahorra tokens manteniendo la señal.
-
-Hasta que esté en el Marketplace de Cursor, plugin local + CLI global:
-
-```powershell
-# Windows
+# Windows (Cursor no sigue symlinks en Windows, por eso robocopy)
 git clone https://github.com/mksglu/context-mode.git
 cd context-mode
 robocopy . "$env:USERPROFILE\.cursor\plugins\local\context-mode" /MIR `
@@ -128,6 +313,272 @@ ln -s "$PWD/context-mode" ~/.cursor/plugins/local/context-mode
 npm install -g context-mode
 ```
 
-Reinicia Cursor. Comprueba en **Settings → MCP** que `context-mode` esté conectado y en el chat: `ctx doctor` o `ctx stats`.
+**Cursor (opción B, manual):** tras `npm install -g context-mode`, crea `.cursor/mcp.json` (o `~/.cursor/mcp.json` para global):
 
-También puedes añadirlo con `/add-plugin context-mode` cuando el Marketplace lo liste (ya aparece en la lista de plugins de arriba).
+```json
+{
+  "mcpServers": {
+    "context-mode": { "command": "context-mode" }
+  }
+}
+```
+
+Usa una sola de las dos opciones: si combinas plugin y `hooks.json` manual, los hooks se disparan dos veces. Reinicia Cursor, comprueba en **Settings → MCP** que `context-mode` esté conectado y escribe en el chat `ctx doctor` o `ctx stats`.
+
+---
+
+## 8. Graphify: mapa del codebase
+
+[Graphify](https://github.com/Graphify-Labs/graphify) convierte el proyecto (código, docs, PDFs, imágenes) en un **grafo de conocimiento** local bajo `graphify-out/`: `graph.json`, `GRAPH_REPORT.md` y un HTML interactivo. El agente consulta el grafo (`query`, `path`, `explain`) en lugar de leer carpetas enteras, y abre solo los archivos que el grafo cita. Para código, la mayor parte del grafo sale de AST local, sin LLM.
+
+**Instalación (cualquier sistema).** El paquete oficial de PyPI es `graphifyy` (doble y); el comando es `graphify`:
+
+```bash
+uv tool install graphifyy     # recomendado; si no aparece el comando: uv tool update-shell
+# alternativas: pipx install graphifyy  |  pip install graphifyy
+```
+
+**Cualquier IDE:**
+
+```bash
+graphify install                       # detecta tu asistente y registra la skill
+graphify install --project             # instala la skill dentro del repo (versionable)
+graphify claude install                # Claude Code: hook que obliga a consultar el grafo
+graphify codex install                 # Codex: escribe la instrucción en AGENTS.md
+```
+
+**Cursor:**
+
+```bash
+graphify install --platform cursor     # skill + regla .cursor/rules/graphify.mdc (alwaysApply)
+```
+
+Genera el grafo en el chat, desde la raíz del proyecto, y consúltalo:
+
+```text
+/graphify .
+/graphify query "flujo de autenticación"
+/graphify path "Login" "Database"
+```
+
+Mantenlo al día: `graphify update .` tras cambios de código (incremental, sin coste de API), `/graphify . --watch` mientras trabajas y un job de CI tras cada merge a `main`. Política típica: versionar `graphify-out/graph.json` y `GRAPH_REPORT.md`, e ignorar las cachés `.graphify_*`. Docs: [Graphify + Cursor](https://docs.graphify.com/integrations/cursor).
+
+---
+
+## 9. Seguridad: SkillSpector y MCP-Scan
+
+Todo skill o servidor MCP externo es una dependencia con acceso a tu repositorio. Dos escáneres cubren lados distintos del riesgo:
+
+| Herramienta | Qué revisa | Cuándo |
+|---|---|---|
+| **[SkillSpector](https://github.com/NVIDIA/SkillSpector)** (NVIDIA) | Skills y paquetes MCP **antes de instalarlos**: vulnerabilidades, patrones maliciosos, prompt injection, exfiltración, cadena de suministro | Antes de añadir una skill y en cada actualización |
+| **[MCP-Scan](https://invariantlabs.ai/blog/introducing-mcp-scan)** (Invariant Labs, hoy *Snyk Agent Scan*) | MCP, agentes y skills **ya instalados**: *tool poisoning*, *rug pulls*, shadowing entre servidores, prompt injection; *tool pinning* por hash | Al añadir un MCP y de forma periódica |
+
+### SkillSpector
+
+Requiere Python 3.12+.
+
+```bash
+uv tool install git+https://github.com/NVIDIA/skillspector.git
+# con servidor MCP incluido:
+uv tool install 'skillspector[mcp] @ git+https://github.com/NVIDIA/skillspector.git'
+```
+
+```bash
+skillspector scan ./my-skill/                          # carpeta local
+skillspector scan https://github.com/usuario/mi-skill  # repositorio remoto
+skillspector scan https://github.com/Japegomez/cursor_skills
+```
+
+El análisis semántico usa un LLM configurable (`SKILLSPECTOR_PROVIDER`, por ejemplo `ollama` para mantenerlo local).
+
+**Cursor:** además de la CLI, puedes registrarlo como MCP para que el agente escanee antes de instalar (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "skillspector": { "command": "skillspector", "args": ["mcp"] }
+  }
+}
+```
+
+### MCP-Scan (Snyk Agent Scan)
+
+No hay paquete npm: se ejecuta con `uvx`.
+
+```bash
+uvx snyk-agent-scan@latest                       # escanea toda la máquina (todos los agentes)
+uvx snyk-agent-scan@latest ~/.claude/skills      # una carpeta de skills
+uvx snyk-agent-scan@latest ruta/a/SKILL.md       # una skill concreta
+```
+
+**Cursor:** el escaneo de máquina detecta `~/.cursor/mcp.json`, `.cursor/mcp.json` del proyecto y las skills instaladas. Repite tras cada `/add-plugin` o MCP nuevo.
+
+> MCP-Scan puede enviar nombres y descripciones de herramientas a la API del proveedor para el análisis. Si eso no encaja con tu política de datos, no lo uses o pide un despliegue privado.
+
+Flujo recomendado: SkillSpector en la puerta de entrada (ninguna skill entra sin escaneo limpio) y MCP-Scan sobre la instalación real, con re-escaneo en cada actualización.
+
+---
+
+## 10. CodeRabbit: revisión automática
+
+[CodeRabbit](https://www.coderabbit.ai/) revisa cada PR con IA: resume el cambio, señala bugs y riesgos, sugiere diffs y sigue las reglas del equipo. Hace el primer pase mecánico; la aprobación final sigue siendo humana.
+
+**En el repositorio (cualquier IDE):**
+
+1. Instala la app de CodeRabbit en GitHub o GitLab desde [coderabbit.ai](https://www.coderabbit.ai/) y dale acceso al repositorio.
+2. Añade un `.coderabbit.yaml` en la raíz con reglas del equipo, por ejemplo: rechazar `any` en TypeScript, exigir paginación en listados o validar inputs en la frontera. Limita los comentarios a severidad media-alta para evitar fatiga.
+
+**CLI (revisar antes de abrir el PR):**
+
+```bash
+curl -fsSL https://cli.coderabbit.ai/install.sh | sh     # macOS / Linux
+brew install coderabbit                                   # alternativa
+```
+
+```powershell
+irm https://cli.coderabbit.ai/install.ps1 | iex           # Windows
+```
+
+```bash
+cr auth login                  # cr es el alias de coderabbit; --region eu para la región UE
+cr review                      # cambios trackeados
+cr review --uncommitted        # solo cambios locales sin commit
+cr review --agent              # salida NDJSON para que la consuma un agente
+coderabbit skills              # instala las skills de CodeRabbit en tus agentes
+```
+
+**Cursor:** instala la extensión de CodeRabbit desde el panel de extensiones (compatible con VS Code, Cursor y Windsurf) para revisar el diff desde el editor, o pide al agente que ejecute `cr review --agent` y corrija los hallazgos antes de abrir el PR.
+
+---
+
+## 11. `AGENTS.md`: las rules del proyecto
+
+[`AGENTS.md`](https://agents.md) es un formato abierto: un README para agentes en la raíz del repositorio. Lo leen Cursor, Codex, Copilot, Claude Code, Windsurf y otros, así que es **la fuente de verdad** de cómo trabajar en el proyecto, independiente del IDE.
+
+Cada línea se paga en tokens en casi todos los chats: mantenlo en **una pantalla**. Incluye stack y comandos canónicos, convenciones, carpetas prohibidas, estilo de commits/PR, prohibiciones y punteros a skills. Los tutoriales y checklists largos van a skills.
+
+Sample oficial de [agentsmd/agents.md](https://github.com/agentsmd/agents.md):
+
+```markdown
+# Sample AGENTS.md file
+
+## Dev environment tips
+- Use `pnpm dlx turbo run where <project_name>` to jump to a package instead of scanning with `ls`.
+- Run `pnpm install --filter <project_name>` to add the package to your workspace so Vite, ESLint, and TypeScript can see it.
+- Use `pnpm create vite@latest <project_name> -- --template react-ts` to spin up a new React + Vite package with TypeScript checks ready.
+- Check the name field inside each package's package.json to confirm the right name—skip the top-level one.
+
+## Testing instructions
+- Find the CI plan in the .github/workflows folder.
+- Run `pnpm turbo run test --filter <project_name>` to run every check defined for that package.
+- From the package root you can just call `pnpm test`. The commit should pass all tests before you merge.
+- To focus on one step, add the Vitest pattern: `pnpm vitest run -t "<test name>"`.
+- Fix any test or type errors until the whole suite is green.
+- After moving files or changing imports, run `pnpm lint --filter <project_name>` to be sure ESLint and TypeScript rules still pass.
+- Add or update tests for the code you change, even if nobody asked.
+
+## PR instructions
+- Title format: [<project_name>] <Title>
+- Always run `pnpm lint` and `pnpm test` before committing.
+```
+
+Bloques que conviene añadir para las herramientas de este tutorial:
+
+```markdown
+## Mapa del codebase (Graphify)
+- Si existe `graphify-out/graph.json`, antes de leer carpetas amplias usa `graphify query "<pregunta>"` (o `path` / `explain`) y abre solo los archivos citados.
+- Tras cambios de código, ejecuta `graphify update .`.
+
+## Especificación
+- La fuente de verdad está en `docs/specs/` (PRD, TRD, appflow, UI/UX, esquema de backend, plan).
+- No inventes tablas, endpoints ni pantallas que no estén en la especificación; si falta algo, pregunta.
+- Tareas de 3+ archivos: primero plan aprobado, después código.
+
+## Prohibiciones
+- Nunca secretos ni PII en prompts. Nunca `git push --force` ni despliegues sin aprobación.
+```
+
+**Cualquier IDE:** basta con el archivo en la raíz (y opcionalmente uno por subcarpeta en monorepos; gana el más cercano al archivo editado).
+
+**Cursor:** lee `AGENTS.md` automáticamente. Las rules en `.cursor/rules/*.mdc` (las que crean Graphify o Context Mode) son un complemento con activación por archivo o `alwaysApply`; no dupliques en ellas lo que ya está en `AGENTS.md`.
+
+---
+
+## 12. Desarrollo guiado por especificación (SDD)
+
+Lo que más impacto tiene en la calidad: **la especificación es la fuente de verdad, no el código**. En lugar de pedir código con una instrucción abierta, das al agente un paquete de documentos versionados y él implementa por tareas. El chat es efímero; la especificación es memoria que se revisa en PR y se reutiliza como contexto preciso.
+
+### Los documentos
+
+Guárdalos en `docs/specs/`:
+
+| Documento | Contenido |
+|---|---|
+| **PRD** (*Product Requirements Document*) | Requisitos de producto: problema, usuarios, alcance, no-objetivos y criterios de aceptación. Responde al *qué* y al *por qué*. |
+| **TRD** (*Technical Requirements Document*) | Requisitos técnicos: restricciones de stack, no funcionales (latencia, seguridad, privacidad), integraciones y límites operativos. |
+| **Appflow** | Flujo de la aplicación: pantallas o pasos, transiciones, estados y caminos felices/error. Une producto y experiencia. |
+| **Diseño UI/UX** | Interfaz y experiencia: wireframes, componentes y reglas de interacción. |
+| **Esquema de backend** | Modelo de datos, contratos de API, eventos y límites de consistencia. Evita inventar tablas o endpoints al implementar. |
+| **Plan de implementación** | Orden de trabajo, archivos a tocar, riesgos, dependencias y cortes por tarea. Se aprueba antes de codificar (ver *Plan vs Implement*, abajo). |
+
+### El ciclo
+
+1. **Constitución:** reglas no negociables del proyecto, en `AGENTS.md` (paso 11).
+2. **Especificar (qué):** PRD, más Appflow y UI/UX cuando hay superficie de usuario. Sin código.
+3. **Planificar (cómo):** TRD, esquema de backend y plan de implementación.
+4. **Tareas:** el plan troceado en unidades pequeñas y verificables; cada una cabe en un chat.
+5. **Implementar y verificar:** una tarea por sesión, con tests; cada diff se revisa contra el paquete, no contra el gusto del revisor.
+
+**Plan vs Implement.** Usa el modo Plan para que el agente investigue en solo lectura y proponga pasos, archivos, tests y riesgos; revisa el plan y solo después cambia a implementación, paso a paso. Corregir un plan cuesta minutos; corregir código, horas. Exígelo en tareas de 3+ archivos, refactors y migraciones.
+
+- **Cualquier IDE:** modo Plan de Claude Code (`Shift+Tab`), Codex o el equivalente; si no existe, pide "no escribas código, dame pasos, archivos, tests y riesgos".
+- **Cursor:** selector de modo del chat (**Plan** / **Agent**). Entre tarea y tarea, chat nuevo o `/handoff` para no arrastrar ruido.
+
+### Flujos y alternativas
+
+**Flujo de Matt Pocock (punto de partida recomendado).** [mattpocock/skills](https://github.com/mattpocock/skills) ya es SDD con skills pequeñas:
+
+```bash
+npx skills add mattpocock/skills
+```
+
+Después ejecuta `/setup-matt-pocock-skills` una vez por repositorio (gestor de trabajo, etiquetas, rutas de specs y glosario).
+
+| Fase | Skill | Resultado |
+|---|---|---|
+| Alinear | `/grill-me` o `/grill-with-docs` | Alcance cerrado, lenguaje ubicuo (`GLOSSARY.md`) y ADR |
+| Especificar | `/to-spec` | Especificación publicada en el gestor de trabajo |
+| Trocear | `/to-tickets` (o `/wayfinder` si hay incertidumbre) | Tareas con dependencias, cada una cabe en una sesión |
+| Implementar | `/implement` + `/tdd` | Código y tests por tarea, con `/code-review` antes del commit |
+| Entregar | `/pr` + `/retro` | PR con evidencia y mejoras al entorno del agente |
+
+**Alternativas:**
+
+| Herramienta | Qué es | Cuándo encaja | Instalación |
+|---|---|---|---|
+| [GitHub Spec Kit](https://github.com/github/spec-kit) | Proceso guiado: `/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, `/speckit.implement` | Proyecto nuevo, equipo pequeño, camino marcado | `uvx --from git+https://github.com/github/spec-kit.git specify init mi-proyecto` (elige el agente al iniciar) |
+| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Ligero; cada cambio es una carpeta (`proposal.md`, `specs/`, `design.md`, `tasks.md`) con specs delta | Repositorio con historia (*brownfield*) | `npm install -g @fission-ai/openspec@latest` y `openspec init` |
+| [superpowers](https://github.com/obra/superpowers) | Skills + metodología: brainstorming, worktrees, plan en tareas de 2–5 min, TDD obligatorio, revisión por severidad | Disciplina de ejecución (tests, revisiones, ramas) | Claude Code: marketplace de plugins; otros: `npx skills add obra/superpowers` |
+| [agent-skills](https://github.com/addyosmani/agent-skills) | Biblioteca de skills de ingeniería de producción con criterio senior | Equipos con proceso propio que quieren subir el listón | `npx skills add addyosmani/agent-skills` |
+| [BMAD-Method](https://github.com/bmad-code-org/BMAD-METHOD) | Metodología por fases con agentes por rol (producto, arquitectura, UX, dev, QA) | Muchas partes interesadas o entorno regulado | `npx bmad-method install` |
+| Amazon Kiro | IDE con specs en notación EARS y hooks | Equipos en AWS que aceptan atarse al IDE | Descarga del IDE |
+
+Criterio: empezar ya sin ceremonia, flujo Matt; brownfield, OpenSpec; proyecto nuevo, Spec Kit; disciplina con TDD y worktrees, superpowers; criterio senior sin cambiar proceso, agent-skills; trazabilidad y roles, BMAD. En todos los casos la especificación se versiona como código y se revisa en PR.
+
+---
+
+## 13. Checklist final
+
+- [ ] Repositorio creado con `AGENTS.md`, `docs/specs/` y `.gitignore`.
+- [ ] Modelo elegido tras consultar Artificial Analysis, LLM Stats y Arena.
+- [ ] (Opcional) OmniRoute corriendo y configurado como base URL.
+- [ ] Agent Reach instalado; `agent-reach doctor` en verde.
+- [ ] Plugins necesarios activos en **Settings → Plugins / MCP**.
+- [ ] Skills instaladas con `npx skills add Japegomez/cursor_skills`.
+- [ ] Caveman, RTK (`rtk gain`) y Context Mode (`ctx doctor`) funcionando.
+- [ ] Grafo generado con `/graphify .` y regla de Graphify activa.
+- [ ] Skills y MCP escaneados con SkillSpector y MCP-Scan.
+- [ ] CodeRabbit instalado en el repositorio y `.coderabbit.yaml` creado.
+- [ ] `AGENTS.md` de una pantalla con comandos, convenciones y prohibiciones.
+- [ ] PRD, TRD, Appflow, UI/UX, esquema de backend y plan de implementación en `docs/specs/` antes de escribir código.
