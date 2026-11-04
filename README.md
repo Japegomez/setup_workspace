@@ -2,9 +2,9 @@
 
 Guía paso a paso para crear un **workspace y un repositorio nuevos** preparados para desarrollar con agentes de IA. Cada herramienta tiene instrucciones para **cualquier IDE/agente** (Claude Code, Codex, Copilot, Windsurf, OpenCode…) y una sección concreta para **Cursor**.
 
-Los pasos siguen un orden lógico **de menor a mayor importancia** en el desarrollo de software: primero lo opcional y de consulta (elegir modelo, gateways, acceso web), después lo que ahorra tokens y amplía el agente, luego seguridad y revisión, y al final lo que más impacto tiene en la calidad del software: las rules del proyecto (`AGENTS.md`) y el desarrollo guiado por especificación (SDD).
+Los pasos siguen un orden lógico **de menor a mayor importancia** en el desarrollo de software: primero lo opcional y de consulta (elegir modelo, gateways, acceso web), después lo que ahorra tokens y amplía el agente, luego revisión automática, y al final lo que más impacto tiene en la calidad del software: las rules del proyecto (`AGENTS.md`) y el desarrollo guiado por especificación (SDD).
 
-> Basado en la *Guía de uso de IA en el desarrollo* (secciones 3.5, 5, 6, 7, 8 y 12). Trata cada herramienta de terceros como una dependencia: revisa permisos, licencia y qué datos envía antes de instalarla (ver paso 9).
+> Basado en la *Guía de uso de IA en el desarrollo* (secciones 3.5, 5, 6, 7, 8 y 12). Trata cada herramienta de terceros como una dependencia: revisa permisos, licencia y qué datos envía antes de instalarla.
 
 ## Índice
 
@@ -17,17 +17,16 @@ Los pasos siguen un orden lógico **de menor a mayor importancia** en el desarro
 6. [Caveman: salida más corta](#6-caveman-salida-más-corta)
 7. [RTK y Context Mode: menos ruido en el contexto](#7-rtk-y-context-mode-menos-ruido-en-el-contexto)
 8. [Graphify: mapa del codebase](#8-graphify-mapa-del-codebase)
-9. [Seguridad: SkillSpector y MCP-Scan](#9-seguridad-skillspector-y-mcp-scan)
-10. [CodeRabbit: revisión automática](#10-coderabbit-revisión-automática)
-11. [`AGENTS.md`: las rules del proyecto](#11-agentsmd-las-rules-del-proyecto)
-12. [Desarrollo guiado por especificación (SDD)](#12-desarrollo-guiado-por-especificación-sdd)
-13. [Checklist final](#13-checklist-final)
+9. [CodeRabbit: revisión automática](#9-coderabbit-revisión-automática)
+10. [`AGENTS.md`: las rules del proyecto](#10-agentsmd-las-rules-del-proyecto)
+11. [Desarrollo guiado por especificación (SDD)](#11-desarrollo-guiado-por-especificación-sdd)
+12. [Checklist final](#12-checklist-final)
 
 ---
 
 ## 0. Requisitos y nuevo repositorio
 
-Varias herramientas dependen de **Git**, **Node.js 22.13+** (Caveman, OmniRoute, Context Mode, `npx skills`) y **Python + uv** (Graphify, SkillSpector, MCP-Scan).
+Varias herramientas dependen de **Git**, **Node.js 22.13+** (Caveman, OmniRoute, Context Mode, `npx skills`) y **Python + uv** (Graphify).
 
 ```bash
 # macOS / Linux
@@ -77,10 +76,10 @@ Estructura objetivo al terminar el tutorial:
 
 ```text
 mi-proyecto/
-├── AGENTS.md                 # rules del proyecto (paso 11)
-├── .coderabbit.yaml          # reglas de revisión (paso 10)
+├── AGENTS.md                 # rules del proyecto (paso 10)
+├── .coderabbit.yaml          # reglas de revisión (paso 9)
 ├── .cursor/rules/            # solo Cursor: graphify.mdc, context-mode.mdc
-├── docs/specs/               # paquete SDD (paso 12)
+├── docs/specs/               # paquete SDD (paso 11)
 │   ├── PRD.md
 │   ├── TRD.md
 │   ├── appflow.md
@@ -235,8 +234,6 @@ Desde la raíz del proyecto, [Impeccable](https://github.com/pbakaus/impeccable)
 npx impeccable install
 ```
 
-> Antes de instalar skills de terceros, escanéalas con SkillSpector (paso 9).
-
 ---
 
 ## 6. Caveman: salida más corta
@@ -387,62 +384,7 @@ Mantenlo al día: `graphify update .` tras cambios de código (incremental, sin 
 
 ---
 
-## 9. Seguridad: SkillSpector y MCP-Scan
-
-Todo skill o servidor MCP externo es una dependencia con acceso a tu repositorio. Dos escáneres cubren lados distintos del riesgo:
-
-| Herramienta | Qué revisa | Cuándo |
-|---|---|---|
-| **[SkillSpector](https://github.com/NVIDIA/SkillSpector)** (NVIDIA) | Skills y paquetes MCP **antes de instalarlos**: vulnerabilidades, patrones maliciosos, prompt injection, exfiltración, cadena de suministro | Antes de añadir una skill y en cada actualización |
-| **[MCP-Scan](https://invariantlabs.ai/blog/introducing-mcp-scan)** (Invariant Labs, hoy *Snyk Agent Scan*) | MCP, agentes y skills **ya instalados**: *tool poisoning*, *rug pulls*, shadowing entre servidores, prompt injection; *tool pinning* por hash | Al añadir un MCP y de forma periódica |
-
-### SkillSpector
-
-Requiere Python 3.12+.
-
-```bash
-uv tool install git+https://github.com/NVIDIA/skillspector.git
-# con servidor MCP incluido:
-uv tool install 'skillspector[mcp] @ git+https://github.com/NVIDIA/skillspector.git'
-```
-
-```bash
-skillspector scan ./my-skill/                          # carpeta local
-skillspector scan https://github.com/usuario/mi-skill  # repositorio remoto
-skillspector scan https://github.com/Japegomez/cursor_skills
-```
-
-El análisis semántico usa un LLM configurable (`SKILLSPECTOR_PROVIDER`, por ejemplo `ollama` para mantenerlo local).
-
-**Cursor:** además de la CLI, puedes registrarlo como MCP para que el agente escanee antes de instalar (`.cursor/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "skillspector": { "command": "skillspector", "args": ["mcp"] }
-  }
-}
-```
-
-### MCP-Scan (Snyk Agent Scan)
-
-No hay paquete npm: se ejecuta con `uvx`.
-
-```bash
-uvx snyk-agent-scan@latest                       # escanea toda la máquina (todos los agentes)
-uvx snyk-agent-scan@latest ~/.claude/skills      # una carpeta de skills
-uvx snyk-agent-scan@latest ruta/a/SKILL.md       # una skill concreta
-```
-
-**Cursor:** el escaneo de máquina detecta `~/.cursor/mcp.json`, `.cursor/mcp.json` del proyecto y las skills instaladas. Repite tras cada `/add-plugin` o MCP nuevo.
-
-> MCP-Scan puede enviar nombres y descripciones de herramientas a la API del proveedor para el análisis. Si eso no encaja con tu política de datos, no lo uses o pide un despliegue privado.
-
-Flujo recomendado: SkillSpector en la puerta de entrada (ninguna skill entra sin escaneo limpio) y MCP-Scan sobre la instalación real, con re-escaneo en cada actualización.
-
----
-
-## 10. CodeRabbit: revisión automática
+## 9. CodeRabbit: revisión automática
 
 [CodeRabbit](https://www.coderabbit.ai/) revisa cada PR con IA: resume el cambio, señala bugs y riesgos, sugiere diffs y sigue las reglas del equipo. Hace el primer pase mecánico; la aprobación final sigue siendo humana.
 
@@ -474,7 +416,7 @@ coderabbit skills              # instala las skills de CodeRabbit en tus agentes
 
 ---
 
-## 11. `AGENTS.md`: las rules del proyecto
+## 10. `AGENTS.md`: las rules del proyecto
 
 [`AGENTS.md`](https://agents.md) es un formato abierto: un README para agentes en la raíz del repositorio. Lo leen Cursor, Codex, Copilot, Claude Code, Windsurf y otros, así que es **la fuente de verdad** de cómo trabajar en el proyecto, independiente del IDE.
 
@@ -527,7 +469,7 @@ Bloques que conviene añadir para las herramientas de este tutorial:
 
 ---
 
-## 12. Desarrollo guiado por especificación (SDD)
+## 11. Desarrollo guiado por especificación (SDD)
 
 Lo que más impacto tiene en la calidad: **la especificación es la fuente de verdad, no el código**. En lugar de pedir código con una instrucción abierta, das al agente un paquete de documentos versionados y él implementa por tareas. El chat es efímero; la especificación es memoria que se revisa en PR y se reutiliza como contexto preciso.
 
@@ -546,7 +488,7 @@ Guárdalos en `docs/specs/`:
 
 ### El ciclo
 
-1. **Constitución:** reglas no negociables del proyecto, en `AGENTS.md` (paso 11).
+1. **Constitución:** reglas no negociables del proyecto, en `AGENTS.md` (paso 10).
 2. **Especificar (qué):** PRD, más Appflow y UI/UX cuando hay superficie de usuario. Sin código.
 3. **Planificar (cómo):** TRD, esquema de backend y plan de implementación.
 4. **Tareas:** el plan troceado en unidades pequeñas y verificables; cada una cabe en un chat.
@@ -590,7 +532,7 @@ Criterio: empezar ya sin ceremonia, flujo Matt; brownfield, OpenSpec; proyecto n
 
 ---
 
-## 13. Checklist final
+## 12. Checklist final
 
 - [ ] Repositorio creado con `AGENTS.md`, `docs/specs/` y `.gitignore`.
 - [ ] Modelo elegido tras consultar Artificial Analysis, LLM Stats y Arena.
@@ -600,7 +542,6 @@ Criterio: empezar ya sin ceremonia, flujo Matt; brownfield, OpenSpec; proyecto n
 - [ ] Skills instaladas con `npx skills add Japegomez/cursor_skills`.
 - [ ] Caveman, RTK (`rtk gain`) y Context Mode (`ctx doctor`) funcionando.
 - [ ] Grafo generado con `/graphify .` y regla de Graphify activa.
-- [ ] Skills y MCP escaneados con SkillSpector y MCP-Scan.
 - [ ] CodeRabbit instalado en el repositorio y `.coderabbit.yaml` creado.
 - [ ] `AGENTS.md` de una pantalla con comandos, convenciones y prohibiciones.
 - [ ] PRD, TRD, Appflow, UI/UX, esquema de backend y plan de implementación en `docs/specs/` antes de escribir código.
