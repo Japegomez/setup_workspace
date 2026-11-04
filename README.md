@@ -41,6 +41,28 @@ winget install Git.Git OpenJS.NodeJS.LTS GitHub.cli
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
+### Instalación manual (webs oficiales)
+
+Si no usas `brew` / `winget` o el instalador por script, descarga cada herramienta desde su web oficial, instálala y **cierra y vuelve a abrir la terminal** (o reinicia el IDE) para que el `PATH` se actualice.
+
+| Herramienta | Web oficial | Qué instalar |
+|---|---|---|
+| **Git** | [https://git-scm.com/downloads](https://git-scm.com/downloads) | Instalador de tu SO (Windows: Git for Windows) |
+| **Node.js** | [https://nodejs.org](https://nodejs.org) | Versión **LTS** (22.13+ recomendada para Caveman / `npx skills`) |
+| **GitHub CLI (`gh`)** | [https://cli.github.com](https://cli.github.com) | Instalador o paquete de tu SO |
+| **uv** (Python) | [https://docs.astral.sh/uv/getting-started/installation/](https://docs.astral.sh/uv/getting-started/installation/) | Método oficial para tu plataforma (standalone, pip, etc.) |
+
+Comprueba que quedaron en el PATH:
+
+```bash
+git --version
+node --version
+gh --version
+uv --version
+```
+
+En Windows, si `uv` o `gh` no se reconocen tras instalar, cierra todas las ventanas de PowerShell/Cursor y ábrelas de nuevo; a veces hace falta un cierre completo de sesión.
+
 Crea el workspace y el repositorio:
 
 ```bash
