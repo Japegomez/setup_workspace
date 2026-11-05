@@ -79,7 +79,7 @@ Estructura objetivo al terminar el tutorial:
 mi-proyecto/
 ├── AGENTS.md                 # rules del proyecto (paso 11)
 ├── .coderabbit.yaml          # reglas de revisión (paso 9)
-├── .github/workflows/        # gitleaks / CodeQL en CI (paso 10)
+├── .github/workflows/        # TruffleHog en CI (paso 10)
 ├── .cursor/rules/            # solo Cursor: graphify.mdc, context-mode.mdc
 ├── docs/specs/               # paquete SDD (paso 12)
 │   ├── PRD.md
@@ -420,30 +420,18 @@ coderabbit skills              # instala las skills de CodeRabbit en tus agentes
 
 ## 10. Escaneo de vulnerabilidades
 
-El código generado con IA introduce los mismos fallos que el humano (inyecciones, autenticación rota, secretos en claro, dependencias dudosas) y algunos propios, como APIs "seguras" alucinadas. La revisión de PR (paso 9) no basta: monta un escaneo en capas, de lo más barato y frecuente a lo más profundo.
+El código generado con IA introduce los mismos fallos que el humano (inyecciones, autenticación rota, secretos en claro) y algunos propios, como APIs "seguras" alucinadas. La revisión de PR (paso 9) no basta: monta **secret scanning automático** y, encima, **revisión con skills** cuando el cambio toca superficie sensible.
 
-| Capa | Herramienta | Qué detecta | Cuándo |
-|---|---|---|---|
-| Secretos | [gitleaks](https://github.com/gitleaks/gitleaks) + CI ([gitleaks-action](https://github.com/gitleaks/gitleaks-action) **o** [TruffleHog](https://github.com/trufflesecurity/trufflehog)) | Claves API, tokens, passwords y certificados | Pre-commit (gitleaks) y cada PR (uno de los dos en CI) |
-| Revisión con agente | Skills `security-review` y `security-audit` (incluidas en este repo) y el plugin **thermos** en Cursor | Vulnerabilidades en el diff con evidencia, severidad y fix mínimo | Antes de cada merge |
-| SAST | [CodeQL](https://codeql.github.com/) | Patrones vulnerables en el código fuente (inyección, XSS, deserialización…) | CI en cada PR y en `main` |
-| Pentesting | [Strix](https://github.com/usestrix/strix) | Vulnerabilidades explotables en la app corriendo, con prueba de concepto | Antes de liberar cambios en auth, pagos o datos |
-
-### Secretos: cómo combinar gitleaks y TruffleHog
-
-No pongas las dos herramientas en el mismo job de CI: solapan hallazgos, alargan el pipeline y generan ruido. Divídelas por momento:
+**Camino recomendado (y el único que documenta este tutorial):**
 
 | Momento | Herramienta | Rol |
 |---|---|---|
-| **Local (pre-commit)** | [gitleaks](https://github.com/gitleaks/gitleaks) CLI | Bloquea el commit en segundos, antes de subir nada |
-| **CI (cada PR y push a `main`)** | **elige uno**: [gitleaks-action](https://github.com/gitleaks/gitleaks-action) **o** [TruffleHog Action](https://github.com/marketplace/actions/trufflehog-oss) | Red de seguridad si alguien se salta el hook |
-| **Opcional (semanal / historial)** | La herramienta que *no* uses en CI | Escaneo profundo del historial completo |
+| **Local (pre-commit)** | [gitleaks](https://github.com/gitleaks/gitleaks) | Bloquea el commit en segundos si hay secreto en el working tree |
+| **CI (cada PR y push a `main`)** | [TruffleHog](https://github.com/trufflesecurity/trufflehog) | Red de seguridad si alguien se salta el hook; verifica si el secreto **sigue vivo** (`--results=verified,unknown`) |
 
-**Recomendación por defecto:** gitleaks en local + **TruffleHog en CI**. gitleaks es el filtro rápido del día a día; TruffleHog, en el PR, comprueba si el secreto encontrado **sigue vivo** (`--results=verified,unknown`) y falla el job si hay hallazgos.
+gitleaks es el filtro rápido del día a día; TruffleHog es la red en el PR. No pongas las dos en el mismo job de CI: solapan hallazgos y generan ruido.
 
-**Alternativa:** gitleaks en local + **gitleaks-action en CI**, cuando quieres un solo ecosistema. En cuentas personales no hace falta licencia; en **organizaciones** de GitHub sí: añade el secreto `GITLEAKS_LICENSE` (ver [gitleaks-action](https://github.com/gitleaks/gitleaks-action)).
-
-#### 1. Local: instalar gitleaks
+### 1. Local: gitleaks
 
 ```bash
 # macOS / Linux
@@ -462,14 +450,7 @@ gitleaks git -v         # historial completo (auditoría puntual)
 
 Engancha el pre-commit copiando el `pre-commit.py` de ejemplo de gitleaks a `.git/hooks/pre-commit`, o usa el framework [`pre-commit`](https://pre-commit.com/) con el hook oficial de gitleaks. Así ningún commit con secreto sale del portátil.
 
-Si quieres TruffleHog también en local (auditorías, no en cada commit):
-
-```bash
-brew install trufflehog   # o releases: https://github.com/trufflesecurity/trufflehog/releases
-trufflehog filesystem . --results=verified,unknown --fail
-```
-
-#### 2. CI: opción A — TruffleHog (recomendada)
+### 2. CI: TruffleHog
 
 Crea `.github/workflows/secret-scan.yml`:
 
@@ -492,89 +473,47 @@ jobs:
           extra_args: --results=verified,unknown
 ```
 
-Escanea solo los commits del PR / push. Para un barrido de toda la rama (p. ej. job semanal):
+Escanea los commits del PR / push. Si aparece un secreto, considéralo comprometido: rótalo y revócalo. Borrarlo del último commit no basta; sigue en el historial. Reescribe o limpia el historial solo con política de equipo y, después, vuelve a pasar el job de CI.
 
-```yaml
-      - name: TruffleHog (rama completa)
-        uses: trufflesecurity/trufflehog@main
-        with:
-          base: ""
-          head: ${{ github.ref_name }}
-          extra_args: --results=verified,unknown
-```
+> gitleaks ya solo recibe parches de seguridad; su autor continúa el trabajo en [Betterleaks](https://github.com/betterleaks/betterleaks). El CLI de gitleaks sigue siendo válido para el pre-commit.
 
-#### 2. CI: opción B — gitleaks-action
+### 3. Skills: cuándo usar cada una
 
-Crea `.github/workflows/gitleaks.yml` (no combines este archivo con el de TruffleHog en el mismo repo, salvo el job semanal opcional):
+Se instalan con la colección del repo (paso 5). No sustituyen a gitleaks/TruffleHog: cubren lógica, auth y flujos que un escáner de secretos no ve.
 
-```yaml
-name: gitleaks
-on:
-  pull_request:
-  push:
-  workflow_dispatch:
-jobs:
-  scan:
-    name: gitleaks
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Solo obligatorio en organizaciones de GitHub:
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-```
+| Skill | Úsala cuando… | No la uses cuando… |
+|---|---|---|
+| **`security-review`** | Vas a abrir o fusionar un PR; quieres un pase rápido del **diff / rama / carpeta** con severidad y fix concreto | Necesitas un informe formal, artefactos o una auditoría end-to-end del repo |
+| **`security-audit`** | Pides explícitamente una **auditoría completa**, pen-test defensivo o entregables (`architecture.md`, hallazgos, plan de validación) | Solo quieres un consejo puntual o un “¿esto es seguro?” sobre un archivo: en ese caso usa modo guía o `security-review` |
 
-#### 3. Qué hacer si aparece un secreto
+Regla práctica: **cada PR → `security-review`**; **cambio grande en auth/pagos/datos o release → `security-audit` en modo completo**.
 
-Considéralo comprometido: rótalo y revócalo. Borrarlo del último commit no basta; sigue en el historial. Reescribe o limpia el historial solo con política de equipo y, después, fuerza el re-escaneo en CI.
+### 4. Proceso paso a paso (por PR)
 
-> gitleaks ya solo recibe parches de seguridad; su autor continúa el trabajo en [Betterleaks](https://github.com/betterleaks/betterleaks). El CLI y gitleaks-action siguen siendo válidos.
-
-### Revisión con agente: `security-review`, `security-audit` y thermos
-
-Las skills se instalan con la colección del repo (paso 5) y sirven en cualquier IDE que soporte skills.
-
-- `security-review`: revisión pre-merge del diff de la rama.
-- `security-audit`: auditoría defensiva más amplia, con hallazgos priorizados y fix mínimo.
+1. Desarrolla en la rama. Antes de cada commit, el pre-commit de **gitleaks** debe estar en verde (`gitleaks dir .` si lo lanzas a mano).
+2. Abre el PR. El workflow de **TruffleHog** debe pasar; si falla, rota el secreto y limpia el historial antes de seguir.
+3. En el chat del agente, lanza la revisión del cambio:
 
 ```text
 /security-review revisa los cambios de esta rama antes del merge
-/security-audit audita el módulo de autenticación
 ```
 
-**Cursor:** el plugin **thermos** (paso 4) añade una revisión estricta de la rama (bugs, seguridad y calidad). Úsalo como segundo eje tras `code-review`.
+   Si el alcance es una carpeta concreta: `/security-review src/auth/`.
+4. El agente debe: acotar el scope → auditar dependencias → buscar secretos/exposición → trazar flujos de datos → clasificar por severidad → proponer parches **sin aplicarlos** hasta que tú apruebes.
+5. Corrige CRITICAL/HIGH primero; vuelve a pasar `/security-review` (o pide re-scan del mismo scope) hasta que no queden hallazgos bloqueantes.
+6. Solo si el PR toca autenticación, pagos, PII o una superficie nueva de ataque, o si preparas un release, lanza la auditoría completa:
 
-### SAST: CodeQL
-
-**CodeQL (GitHub):** en el repositorio, **Settings → Advanced Security → CodeQL analysis → Set up → Default**. GitHub detecta los lenguajes y analiza cada PR y cada push a `main`; los hallazgos aparecen en la pestaña **Security** y como anotaciones en el PR. Con los hallazgos a la vista, pide al agente que los explique y proponga la corrección; la decisión de aplicarla sigue siendo tuya.
-
-### Pentesting: Strix
-
-[Strix](https://github.com/usestrix/strix) orquesta agentes de IA (reconocimiento, explotación, validación) que atacan tu aplicación como un red team y entregan cada vulnerabilidad con prueba de concepto. Necesita Docker y una clave de LLM.
-
-```bash
-curl -sSL https://strix.ai/install | bash        # o: pipx install strix-agent / uv tool install strix-agent
-export STRIX_LLM="openrouter/z-ai/glm-5.3"       # proveedor/modelo
-export LLM_API_KEY="tu-api-key"
-strix --target ./mi-proyecto                     # código local
-strix -n --target https://staging.mi-app.com     # app desplegada, modo no interactivo (CI)
+```text
+/security-audit audita el módulo de autenticación (modo completo, con informe)
 ```
 
-En Windows, ejecútalo desde WSL. Puedes apuntar `STRIX_LLM` a OmniRoute (paso 2) para las pasadas de reconocimiento masivo y reservar un modelo frontera para validar.
-
-> Úsalo solo contra tus entornos de desarrollo o staging. Nunca contra producción ni contra sistemas de terceros sin autorización escrita.
-
-**Cursor y cualquier IDE:** Strix es una CLI; lánzalo desde la terminal integrada o pide al agente que lo ejecute y convierta el informe en tareas con severidad.
+7. Fusiona cuando: gitleaks local OK, TruffleHog CI verde, `security-review` sin CRITICAL/HIGH abiertos y, si aplica, el informe de `security-audit` revisado.
 
 ### Política mínima
 
-- Ningún PR se fusiona con secretos detectados (job de secret-scan en rojo) ni con vulnerabilidades nuevas de severidad alta en CodeQL.
-- Los cambios en auth, pagos o datos pasan por `security-review` y por una pasada de Strix en staging.
-- Re-escanea tras cada fix para confirmar que el hallazgo desaparece.
+- Ningún PR se fusiona con el job `secret-scan` en rojo.
+- Todo PR pasa por `/security-review` antes del merge.
+- Auth, pagos o datos personales: además, `/security-audit` en modo completo.
 
 ---
 
@@ -705,6 +644,6 @@ Criterio: empezar ya sin ceremonia, flujo Matt; brownfield, OpenSpec; proyecto n
 - [ ] Caveman, RTK (`rtk gain`) y Context Mode (`ctx doctor`) funcionando.
 - [ ] Grafo generado con `/graphify .` y regla de Graphify activa.
 - [ ] CodeRabbit instalado en el repositorio y `.coderabbit.yaml` creado.
-- [ ] gitleaks en pre-commit + (gitleaks-action **o** TruffleHog) en CI; CodeQL activo; Strix probado contra staging.
+- [ ] gitleaks en pre-commit + TruffleHog en CI; `/security-review` en cada PR (y `/security-audit` si toca auth/pagos/datos).
 - [ ] `AGENTS.md` de una pantalla con comandos, convenciones y prohibiciones.
 - [ ] PRD, TRD, Appflow, UI/UX, esquema de backend y plan de implementación en `docs/specs/` antes de escribir código.
