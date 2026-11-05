@@ -480,20 +480,31 @@ Escanea los commits del PR / push. Si aparece un secreto, considéralo compromet
 
 ### 3. Skills: cuándo usar cada una
 
-Se instalan con la colección del repo (paso 5). No sustituyen a gitleaks/TruffleHog: cubren lógica, auth y flujos que un escáner de secretos no ve.
+Dos orígenes distintos (no sustituyen a gitleaks/TruffleHog):
 
-| Skill | Úsala cuando… | No la uses cuando… |
-|---|---|---|
-| **`security-review`** | Vas a abrir o fusionar un PR; quieres un pase rápido del **diff / rama / carpeta** con severidad y fix concreto | Necesitas un informe formal, artefactos o una auditoría end-to-end del repo |
-| **`security-audit`** | Pides explícitamente una **auditoría completa**, pen-test defensivo o entregables (`architecture.md`, hallazgos, plan de validación) | Solo quieres un consejo puntual o un “¿esto es seguro?” sobre un archivo: en ese caso usa modo guía o `security-review` |
+1. **Colección del repo** (paso 5): `security-review` y `security-audit`.
+2. **Plugin thermos** en Cursor (paso 4: `/add-plugin … thermos`): revisión estricta del **diff de la rama** con dos ejes en paralelo.
 
-Regla práctica: **cada PR → `security-review`**; **cambio grande en auth/pagos/datos o release → `security-audit` en modo completo**.
+| Skill / comando | Origen | Úsala cuando… | No la uses cuando… |
+|---|---|---|---|
+| **`security-review`** | Repo | Pase rápido del **diff / rama / carpeta** con severidad y fix concreto antes del merge | Necesitas informe formal o auditoría end-to-end del repo |
+| **`security-audit`** | Repo | Auditoría **completa**, pen-test defensivo o entregables (`architecture.md`, hallazgos, plan) | Solo un consejo puntual o un archivo: usa modo guía o `security-review` |
+| **`/thermos`** | Plugin thermos | Quieres **ambos ejes thermos a la vez** (bugs/seguridad + calidad) y un veredicto unificado | Solo te importa un eje; entonces usa la skill concreta de abajo |
+| **`/thermo-nuclear-review`** | Plugin thermos | Auditoría dura del diff: bugs, roturas, seguridad, regresiones de devex y fugas de feature flags | Quieres mantener el código limpio/estructurado (eso es la otra skill) |
+| **`/thermo-nuclear-code-quality-review`** | Plugin thermos | Mantenerabilidad: archivos →1k líneas, spaghetti, abstracciones flojas, “code judo” | Buscas vulnerabilidades o secretos (usa `security-review` / `thermo-nuclear-review`) |
+
+Regla práctica:
+
+- **Cada PR:** `/security-review` **y** `/thermos` (o, si prefieres control fino, `/thermo-nuclear-review` + `/thermo-nuclear-code-quality-review`).
+- **Auth / pagos / datos o release:** además, `/security-audit` en modo completo.
+
+`security-review` razona sobre vulnerabilidades y secretos en el código; thermos revisa el **cambio de la rama** con barra muy alta (correctness + calidad). Se complementan: no elijas solo uno en PRs importantes.
 
 ### 4. Proceso paso a paso (por PR)
 
 1. Desarrolla en la rama. Antes de cada commit, el pre-commit de **gitleaks** debe estar en verde (`gitleaks dir .` si lo lanzas a mano).
 2. Abre el PR. El workflow de **TruffleHog** debe pasar; si falla, rota el secreto y limpia el historial antes de seguir.
-3. En el chat del agente, lanza la revisión del cambio:
+3. En el chat (cualquier IDE con la colección), lanza la revisión de seguridad del cambio:
 
 ```text
 /security-review revisa los cambios de esta rama antes del merge
@@ -501,14 +512,28 @@ Regla práctica: **cada PR → `security-review`**; **cambio grande en auth/pago
 
    Si el alcance es una carpeta concreta: `/security-review src/auth/`.
 4. El agente debe: acotar el scope → auditar dependencias → buscar secretos/exposición → trazar flujos de datos → clasificar por severidad → proponer parches **sin aplicarlos** hasta que tú apruebes.
-5. Corrige CRITICAL/HIGH primero; vuelve a pasar `/security-review` (o pide re-scan del mismo scope) hasta que no queden hallazgos bloqueantes.
-6. Solo si el PR toca autenticación, pagos, PII o una superficie nueva de ataque, o si preparas un release, lanza la auditoría completa:
+5. **Cursor + thermos** (plugin del paso 4 activo): lanza la doble revisión de rama. Por defecto usa el comando combinado:
+
+```text
+/thermos revisa esta rama antes del merge
+```
+
+   Equivalente explícito (mismo alcance, dos pasadas):
+
+```text
+/thermo-nuclear-review audita bugs, seguridad y roturas del diff
+/thermo-nuclear-code-quality-review audita mantenibilidad del diff
+```
+
+   Thermos lanza ambos ejes en paralelo y sintetiza: prioriza solapes, resume el veredicto y no reaplica hallazgos ya visibles.
+6. Corrige primero CRITICAL/HIGH de `security-review` y los hallazgos altos de thermos; vuelve a pasar `/security-review` y `/thermos` hasta que no queden bloqueantes.
+7. Solo si el PR toca autenticación, pagos, PII o una superficie nueva de ataque, o si preparas un release, lanza la auditoría completa:
 
 ```text
 /security-audit audita el módulo de autenticación (modo completo, con informe)
 ```
 
-7. Fusiona cuando: gitleaks local OK, TruffleHog CI verde, `security-review` sin CRITICAL/HIGH abiertos y, si aplica, el informe de `security-audit` revisado.
+8. Fusiona cuando: gitleaks local OK, TruffleHog CI verde, `security-review` y thermos sin hallazgos altos abiertos y, si aplica, el informe de `security-audit` revisado.
 
 ### 5. Pentesting opcional: Strix
 
@@ -552,6 +577,7 @@ En Windows, ejecútalo desde WSL **con Docker Desktop integrado** (Settings → 
 
 - Ningún PR se fusiona con el job `secret-scan` en rojo.
 - Todo PR pasa por `/security-review` antes del merge.
+- En Cursor, todo PR pasa también por `/thermos` (o las dos skills thermo por separado).
 - Auth, pagos o datos personales: además, `/security-audit` en modo completo.
 - Antes de liberar esa superficie a staging/prod: Strix con Docker en marcha.
 
@@ -684,7 +710,8 @@ Criterio: empezar ya sin ceremonia, flujo Matt; brownfield, OpenSpec; proyecto n
 - [ ] Caveman, RTK (`rtk gain`) y Context Mode (`ctx doctor`) funcionando.
 - [ ] Grafo generado con `/graphify .` y regla de Graphify activa.
 - [ ] CodeRabbit instalado en el repositorio y `.coderabbit.yaml` creado.
-- [ ] gitleaks en pre-commit + TruffleHog en CI; `/security-review` en cada PR (y `/security-audit` si toca auth/pagos/datos).
+- [ ] gitleaks en pre-commit + TruffleHog en CI; `/security-review` + `/thermos` en cada PR (y `/security-audit` si toca auth/pagos/datos).
+- [ ] Plugin thermos activo en Cursor (paso 4).
 - [ ] (Opcional) Docker en marcha y Strix probado contra staging antes de liberar auth/pagos/datos.
 - [ ] `AGENTS.md` de una pantalla con comandos, convenciones y prohibiciones.
 - [ ] PRD, TRD, Appflow, UI/UX, esquema de backend y plan de implementación en `docs/specs/` antes de escribir código.
