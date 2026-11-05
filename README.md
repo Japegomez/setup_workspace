@@ -428,6 +428,7 @@ El código generado con IA introduce los mismos fallos que el humano (inyeccione
 |---|---|---|
 | **Local (pre-commit)** | [gitleaks](https://github.com/gitleaks/gitleaks) | Bloquea el commit en segundos si hay secreto en el working tree |
 | **CI (cada PR y push a `main`)** | [TruffleHog](https://github.com/trufflesecurity/trufflehog) | Red de seguridad si alguien se salta el hook; verifica si el secreto **sigue vivo** (`--results=verified,unknown`) |
+| **Antes de liberar** (opcional) | [Strix](https://github.com/usestrix/strix) | Pentest con PoC; **Docker debe estar corriendo** |
 
 gitleaks es el filtro rápido del día a día; TruffleHog es la red en el PR. No pongas las dos en el mismo job de CI: solapan hallazgos y generan ruido.
 
@@ -509,11 +510,50 @@ Regla práctica: **cada PR → `security-review`**; **cambio grande en auth/pago
 
 7. Fusiona cuando: gitleaks local OK, TruffleHog CI verde, `security-review` sin CRITICAL/HIGH abiertos y, si aplica, el informe de `security-audit` revisado.
 
+### 5. Pentesting opcional: Strix
+
+[Strix](https://github.com/usestrix/strix) orquesta agentes de IA que atacan tu app como un red team y entregan cada hallazgo con prueba de concepto. Úsalo **antes de liberar** cambios en auth, pagos o datos (staging), no en cada PR.
+
+**Requisito: Docker tiene que estar instalado y en marcha** antes de lanzar Strix. Si el daemon no corre, la CLI falla al crear contenedores.
+
+```bash
+# 1) Comprueba que Docker responde
+docker info
+# Si ves "Cannot connect to the Docker daemon", arráncalo primero.
+```
+
+```bash
+# macOS: abre Docker Desktop (o)
+open -a Docker
+
+# Linux (systemd)
+sudo systemctl start docker
+sudo systemctl enable docker   # opcional: al arrancar el sistema
+
+# Windows: inicia Docker Desktop desde el menú Inicio, o
+Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+```
+
+Espera a que el icono de Docker Desktop diga *Running* (o `docker info` sin error) y entonces instala/ejecuta Strix:
+
+```bash
+curl -sSL https://strix.ai/install | bash        # o: pipx install strix-agent / uv tool install strix-agent
+export STRIX_LLM="openrouter/z-ai/glm-5.3"       # proveedor/modelo
+export LLM_API_KEY="tu-api-key"
+strix --target ./mi-proyecto                     # código local
+strix -n --target https://staging.mi-app.com     # app desplegada, modo no interactivo (CI)
+```
+
+En Windows, ejecútalo desde WSL **con Docker Desktop integrado** (Settings → Resources → WSL integration). Puedes apuntar `STRIX_LLM` a OmniRoute (paso 2) para las pasadas de reconocimiento masivo y reservar un modelo frontera para validar.
+
+> Solo contra tus entornos de desarrollo o staging. Nunca contra producción ni contra sistemas de terceros sin autorización escrita.
+
 ### Política mínima
 
 - Ningún PR se fusiona con el job `secret-scan` en rojo.
 - Todo PR pasa por `/security-review` antes del merge.
 - Auth, pagos o datos personales: además, `/security-audit` en modo completo.
+- Antes de liberar esa superficie a staging/prod: Strix con Docker en marcha.
 
 ---
 
@@ -645,5 +685,6 @@ Criterio: empezar ya sin ceremonia, flujo Matt; brownfield, OpenSpec; proyecto n
 - [ ] Grafo generado con `/graphify .` y regla de Graphify activa.
 - [ ] CodeRabbit instalado en el repositorio y `.coderabbit.yaml` creado.
 - [ ] gitleaks en pre-commit + TruffleHog en CI; `/security-review` en cada PR (y `/security-audit` si toca auth/pagos/datos).
+- [ ] (Opcional) Docker en marcha y Strix probado contra staging antes de liberar auth/pagos/datos.
 - [ ] `AGENTS.md` de una pantalla con comandos, convenciones y prohibiciones.
 - [ ] PRD, TRD, Appflow, UI/UX, esquema de backend y plan de implementación en `docs/specs/` antes de escribir código.
