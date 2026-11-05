@@ -2,7 +2,7 @@
 
 Guía paso a paso para crear un **workspace y un repositorio nuevos** preparados para desarrollar con agentes de IA. Cada herramienta tiene instrucciones para **cualquier IDE/agente** (Claude Code, Codex, Copilot, Windsurf, OpenCode…) y una sección concreta para **Cursor**.
 
-Los pasos siguen un orden lógico **de menor a mayor importancia** en el desarrollo de software: primero lo opcional y de consulta (elegir modelo, gateways, acceso web), después lo que ahorra tokens y amplía el agente, luego revisión automática, y al final lo que más impacto tiene en la calidad del software: las rules del proyecto (`AGENTS.md`) y el desarrollo guiado por especificación (SDD).
+Los pasos siguen un orden lógico **de menor a mayor importancia** en el desarrollo de software: primero lo opcional y de consulta (elegir modelo, gateways, acceso web), después lo que ahorra tokens y amplía el agente, luego revisión automática y escaneo de vulnerabilidades, y al final lo que más impacto tiene en la calidad del software: las rules del proyecto (`AGENTS.md`) y el desarrollo guiado por especificación (SDD).
 
 > Basado en la *Guía de uso de IA en el desarrollo* (secciones 3.5, 5, 6, 7, 8 y 12). Trata cada herramienta de terceros como una dependencia: revisa permisos, licencia y qué datos envía antes de instalarla.
 
@@ -18,9 +18,10 @@ Los pasos siguen un orden lógico **de menor a mayor importancia** en el desarro
 7. [RTK y Context Mode: menos ruido en el contexto](#7-rtk-y-context-mode-menos-ruido-en-el-contexto)
 8. [Graphify: mapa del codebase](#8-graphify-mapa-del-codebase)
 9. [CodeRabbit: revisión automática](#9-coderabbit-revisión-automática)
-10. [`AGENTS.md`: las rules del proyecto](#10-agentsmd-las-rules-del-proyecto)
-11. [Desarrollo guiado por especificación (SDD)](#11-desarrollo-guiado-por-especificación-sdd)
-12. [Checklist final](#12-checklist-final)
+10. [Escaneo de vulnerabilidades](#10-escaneo-de-vulnerabilidades)
+11. [`AGENTS.md`: las rules del proyecto](#11-agentsmd-las-rules-del-proyecto)
+12. [Desarrollo guiado por especificación (SDD)](#12-desarrollo-guiado-por-especificación-sdd)
+13. [Checklist final](#13-checklist-final)
 
 ---
 
@@ -76,10 +77,11 @@ Estructura objetivo al terminar el tutorial:
 
 ```text
 mi-proyecto/
-├── AGENTS.md                 # rules del proyecto (paso 10)
+├── AGENTS.md                 # rules del proyecto (paso 11)
 ├── .coderabbit.yaml          # reglas de revisión (paso 9)
+├── .github/workflows/        # gitleaks / CodeQL en CI (paso 10)
 ├── .cursor/rules/            # solo Cursor: graphify.mdc, context-mode.mdc
-├── docs/specs/               # paquete SDD (paso 11)
+├── docs/specs/               # paquete SDD (paso 12)
 │   ├── PRD.md
 │   ├── TRD.md
 │   ├── appflow.md
@@ -416,7 +418,111 @@ coderabbit skills              # instala las skills de CodeRabbit en tus agentes
 
 ---
 
-## 10. `AGENTS.md`: las rules del proyecto
+## 10. Escaneo de vulnerabilidades
+
+El código generado con IA introduce los mismos fallos que el humano (inyecciones, autenticación rota, secretos en claro, dependencias dudosas) y algunos propios, como APIs "seguras" alucinadas. La revisión de PR (paso 9) no basta: monta un escaneo en capas, de lo más barato y frecuente a lo más profundo.
+
+| Capa | Herramienta | Qué detecta | Cuándo |
+|---|---|---|---|
+| Secretos | [gitleaks](https://github.com/gitleaks/gitleaks) y [TruffleHog](https://github.com/trufflesecurity/trufflehog) | Claves API, tokens, passwords y certificados en el código y el historial de git | Pre-commit y en cada PR |
+| Revisión con agente | Skills `security-review` y `security-audit` (incluidas en este repo) y el plugin **thermos** en Cursor | Vulnerabilidades en el diff con evidencia, severidad y fix mínimo | Antes de cada merge |
+| SAST | [CodeQL](https://codeql.github.com/) y [SonarQube](https://www.sonarsource.com/products/sonarqube/) | Patrones vulnerables en el código fuente (inyección, XSS, deserialización…) y calidad | CI en cada PR y en `main` |
+| Pentesting | [Strix](https://github.com/usestrix/strix) | Vulnerabilidades explotables en la app corriendo, con prueba de concepto | Antes de liberar cambios en auth, pagos o datos |
+
+### Secretos: gitleaks y TruffleHog
+
+gitleaks es rápido y sirve de pre-commit; TruffleHog además **verifica** si la credencial encontrada sigue activa. Basta con uno en pre-commit y otro en CI.
+
+```bash
+# macOS / Linux
+brew install gitleaks trufflehog
+```
+
+```powershell
+# Windows: descarga el binario de la página de releases de cada proyecto
+# https://github.com/gitleaks/gitleaks/releases
+# https://github.com/trufflesecurity/trufflehog/releases
+```
+
+```bash
+gitleaks git -v                                        # historial completo del repo
+gitleaks dir .                                         # ficheros del directorio, sin git
+trufflehog git file://. --results=verified,unknown     # secretos verificados en el historial
+trufflehog filesystem . --results=verified,unknown --fail
+```
+
+Pre-commit: copia el `pre-commit.py` de ejemplo de gitleaks en `.git/hooks/`, o usa el hook de TruffleHog (ver [PreCommit.md](https://github.com/trufflesecurity/trufflehog/blob/main/PreCommit.md)). En GitHub, [gitleaks-action](https://github.com/gitleaks/gitleaks-action) lo ejecuta en cada PR.
+
+Si aparece un secreto real: considéralo comprometido, rótalo y revócalo. Borrarlo del último commit no basta, sigue en el historial.
+
+> gitleaks ya solo recibe parches de seguridad; su autor continúa el trabajo en [Betterleaks](https://github.com/betterleaks/betterleaks).
+
+### Revisión con agente: `security-review`, `security-audit` y thermos
+
+Las skills se instalan con la colección del repo (paso 5) y sirven en cualquier IDE que soporte skills.
+
+- `security-review`: revisión pre-merge del diff de la rama.
+- `security-audit`: auditoría defensiva más amplia, con hallazgos priorizados y fix mínimo.
+
+```text
+/security-review revisa los cambios de esta rama antes del merge
+/security-audit audita el módulo de autenticación
+```
+
+**Cursor:** el plugin **thermos** (paso 4) añade una revisión estricta de la rama (bugs, seguridad y calidad). Úsalo como segundo eje tras `code-review`.
+
+### SAST: CodeQL y SonarQube
+
+**CodeQL (GitHub):** en el repositorio, **Settings → Advanced Security → CodeQL analysis → Set up → Default**. GitHub detecta los lenguajes y analiza cada PR y cada push a `main`; los hallazgos aparecen en la pestaña **Security** y como anotaciones en el PR.
+
+**SonarQube (Cloud o Server):** conecta el repositorio desde SonarQube Cloud o añade el escáner a tu CI y define una *quality gate* que bloquee el merge con vulnerabilidades nuevas. Para que el agente consulte los hallazgos, registra el [SonarQube MCP server](https://github.com/SonarSource/sonarqube-mcp-server) (necesita Docker y un token de usuario):
+
+```json
+{
+  "mcpServers": {
+    "sonarqube": {
+      "command": "docker",
+      "args": ["run", "--init", "--pull=always", "--rm", "-i", "-e", "SONARQUBE_TOKEN", "-e", "SONARQUBE_ORG", "sonarsource/sonarqube-mcp"],
+      "env": { "SONARQUBE_TOKEN": "<TU_TOKEN>", "SONARQUBE_ORG": "<TU_ORG>" }
+    }
+  }
+}
+```
+
+Para SonarQube Server, sustituye `SONARQUBE_ORG` por `SONARQUBE_URL` con la URL de tu servidor.
+
+- **Cualquier IDE:** añade el bloque anterior a la configuración MCP de tu agente (Claude Code, Codex y Copilot tienen ejemplos en el README del servidor).
+- **Cursor:** pégalo en `.cursor/mcp.json` o usa el botón *Install in Cursor* del README. No subas el token al repositorio: usa `~/.cursor/mcp.json` o una variable de entorno.
+
+Con los hallazgos en el contexto, pide al agente que los explique y proponga la corrección; la decisión de aplicarla sigue siendo tuya.
+
+### Pentesting: Strix
+
+[Strix](https://github.com/usestrix/strix) orquesta agentes de IA (reconocimiento, explotación, validación) que atacan tu aplicación como un red team y entregan cada vulnerabilidad con prueba de concepto. Necesita Docker y una clave de LLM.
+
+```bash
+curl -sSL https://strix.ai/install | bash        # o: pipx install strix-agent / uv tool install strix-agent
+export STRIX_LLM="openrouter/z-ai/glm-5.3"       # proveedor/modelo
+export LLM_API_KEY="tu-api-key"
+strix --target ./mi-proyecto                     # código local
+strix -n --target https://staging.mi-app.com     # app desplegada, modo no interactivo (CI)
+```
+
+En Windows, ejecútalo desde WSL. Puedes apuntar `STRIX_LLM` a OmniRoute (paso 2) para las pasadas de reconocimiento masivo y reservar un modelo frontera para validar.
+
+> Úsalo solo contra tus entornos de desarrollo o staging. Nunca contra producción ni contra sistemas de terceros sin autorización escrita.
+
+**Cursor y cualquier IDE:** Strix es una CLI; lánzalo desde la terminal integrada o pide al agente que lo ejecute y convierta el informe en tareas con severidad.
+
+### Política mínima
+
+- Ningún PR se fusiona con secretos detectados ni con vulnerabilidades nuevas de severidad alta en CodeQL o Sonar.
+- Los cambios en auth, pagos o datos pasan por `security-review` y por una pasada de Strix en staging.
+- Re-escanea tras cada fix para confirmar que el hallazgo desaparece.
+
+---
+
+## 11. `AGENTS.md`: las rules del proyecto
 
 [`AGENTS.md`](https://agents.md) es un formato abierto: un README para agentes en la raíz del repositorio. Lo leen Cursor, Codex, Copilot, Claude Code, Windsurf y otros, así que es **la fuente de verdad** de cómo trabajar en el proyecto, independiente del IDE.
 
@@ -469,7 +575,7 @@ Bloques que conviene añadir para las herramientas de este tutorial:
 
 ---
 
-## 11. Desarrollo guiado por especificación (SDD)
+## 12. Desarrollo guiado por especificación (SDD)
 
 Lo que más impacto tiene en la calidad: **la especificación es la fuente de verdad, no el código**. En lugar de pedir código con una instrucción abierta, das al agente un paquete de documentos versionados y él implementa por tareas. El chat es efímero; la especificación es memoria que se revisa en PR y se reutiliza como contexto preciso.
 
@@ -488,7 +594,7 @@ Guárdalos en `docs/specs/`:
 
 ### El ciclo
 
-1. **Constitución:** reglas no negociables del proyecto, en `AGENTS.md` (paso 10).
+1. **Constitución:** reglas no negociables del proyecto, en `AGENTS.md` (paso 11).
 2. **Especificar (qué):** PRD, más Appflow y UI/UX cuando hay superficie de usuario. Sin código.
 3. **Planificar (cómo):** TRD, esquema de backend y plan de implementación.
 4. **Tareas:** el plan troceado en unidades pequeñas y verificables; cada una cabe en un chat.
@@ -532,7 +638,7 @@ Criterio: empezar ya sin ceremonia, flujo Matt; brownfield, OpenSpec; proyecto n
 
 ---
 
-## 12. Checklist final
+## 13. Checklist final
 
 - [ ] Repositorio creado con `AGENTS.md`, `docs/specs/` y `.gitignore`.
 - [ ] Modelo elegido tras consultar Artificial Analysis, LLM Stats y Arena.
@@ -543,5 +649,6 @@ Criterio: empezar ya sin ceremonia, flujo Matt; brownfield, OpenSpec; proyecto n
 - [ ] Caveman, RTK (`rtk gain`) y Context Mode (`ctx doctor`) funcionando.
 - [ ] Grafo generado con `/graphify .` y regla de Graphify activa.
 - [ ] CodeRabbit instalado en el repositorio y `.coderabbit.yaml` creado.
+- [ ] gitleaks o TruffleHog en pre-commit y CI, CodeQL (o Sonar) activo y Strix probado contra staging.
 - [ ] `AGENTS.md` de una pantalla con comandos, convenciones y prohibiciones.
 - [ ] PRD, TRD, Appflow, UI/UX, esquema de backend y plan de implementación en `docs/specs/` antes de escribir código.
