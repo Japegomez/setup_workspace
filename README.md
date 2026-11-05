@@ -424,38 +424,115 @@ El código generado con IA introduce los mismos fallos que el humano (inyeccione
 
 | Capa | Herramienta | Qué detecta | Cuándo |
 |---|---|---|---|
-| Secretos | [gitleaks](https://github.com/gitleaks/gitleaks) y [TruffleHog](https://github.com/trufflesecurity/trufflehog) | Claves API, tokens, passwords y certificados en el código y el historial de git | Pre-commit y en cada PR |
+| Secretos | [gitleaks](https://github.com/gitleaks/gitleaks) + CI ([gitleaks-action](https://github.com/gitleaks/gitleaks-action) **o** [TruffleHog](https://github.com/trufflesecurity/trufflehog)) | Claves API, tokens, passwords y certificados | Pre-commit (gitleaks) y cada PR (uno de los dos en CI) |
 | Revisión con agente | Skills `security-review` y `security-audit` (incluidas en este repo) y el plugin **thermos** en Cursor | Vulnerabilidades en el diff con evidencia, severidad y fix mínimo | Antes de cada merge |
-| SAST | [CodeQL](https://codeql.github.com/) y [SonarQube](https://www.sonarsource.com/products/sonarqube/) | Patrones vulnerables en el código fuente (inyección, XSS, deserialización…) y calidad | CI en cada PR y en `main` |
+| SAST | [CodeQL](https://codeql.github.com/) | Patrones vulnerables en el código fuente (inyección, XSS, deserialización…) | CI en cada PR y en `main` |
 | Pentesting | [Strix](https://github.com/usestrix/strix) | Vulnerabilidades explotables en la app corriendo, con prueba de concepto | Antes de liberar cambios en auth, pagos o datos |
 
-### Secretos: gitleaks y TruffleHog
+### Secretos: cómo combinar gitleaks y TruffleHog
 
-gitleaks es rápido y sirve de pre-commit; TruffleHog además **verifica** si la credencial encontrada sigue activa. Basta con uno en pre-commit y otro en CI.
+No pongas las dos herramientas en el mismo job de CI: solapan hallazgos, alargan el pipeline y generan ruido. Divídelas por momento:
+
+| Momento | Herramienta | Rol |
+|---|---|---|
+| **Local (pre-commit)** | [gitleaks](https://github.com/gitleaks/gitleaks) CLI | Bloquea el commit en segundos, antes de subir nada |
+| **CI (cada PR y push a `main`)** | **elige uno**: [gitleaks-action](https://github.com/gitleaks/gitleaks-action) **o** [TruffleHog Action](https://github.com/marketplace/actions/trufflehog-oss) | Red de seguridad si alguien se salta el hook |
+| **Opcional (semanal / historial)** | La herramienta que *no* uses en CI | Escaneo profundo del historial completo |
+
+**Recomendación por defecto:** gitleaks en local + **TruffleHog en CI**. gitleaks es el filtro rápido del día a día; TruffleHog, en el PR, comprueba si el secreto encontrado **sigue vivo** (`--results=verified,unknown`) y falla el job si hay hallazgos.
+
+**Alternativa:** gitleaks en local + **gitleaks-action en CI**, cuando quieres un solo ecosistema. En cuentas personales no hace falta licencia; en **organizaciones** de GitHub sí: añade el secreto `GITLEAKS_LICENSE` (ver [gitleaks-action](https://github.com/gitleaks/gitleaks-action)).
+
+#### 1. Local: instalar gitleaks
 
 ```bash
 # macOS / Linux
-brew install gitleaks trufflehog
+brew install gitleaks
 ```
 
 ```powershell
-# Windows: descarga el binario de la página de releases de cada proyecto
+# Windows: descarga el binario desde
 # https://github.com/gitleaks/gitleaks/releases
-# https://github.com/trufflesecurity/trufflehog/releases
 ```
 
 ```bash
-gitleaks git -v                                        # historial completo del repo
-gitleaks dir .                                         # ficheros del directorio, sin git
-trufflehog git file://. --results=verified,unknown     # secretos verificados en el historial
+gitleaks dir .          # working tree actual
+gitleaks git -v         # historial completo (auditoría puntual)
+```
+
+Engancha el pre-commit copiando el `pre-commit.py` de ejemplo de gitleaks a `.git/hooks/pre-commit`, o usa el framework [`pre-commit`](https://pre-commit.com/) con el hook oficial de gitleaks. Así ningún commit con secreto sale del portátil.
+
+Si quieres TruffleHog también en local (auditorías, no en cada commit):
+
+```bash
+brew install trufflehog   # o releases: https://github.com/trufflesecurity/trufflehog/releases
 trufflehog filesystem . --results=verified,unknown --fail
 ```
 
-Pre-commit: copia el `pre-commit.py` de ejemplo de gitleaks en `.git/hooks/`, o usa el hook de TruffleHog (ver [PreCommit.md](https://github.com/trufflesecurity/trufflehog/blob/main/PreCommit.md)). En GitHub, [gitleaks-action](https://github.com/gitleaks/gitleaks-action) lo ejecuta en cada PR.
+#### 2. CI: opción A — TruffleHog (recomendada)
 
-Si aparece un secreto real: considéralo comprometido, rótalo y revócalo. Borrarlo del último commit no basta, sigue en el historial.
+Crea `.github/workflows/secret-scan.yml`:
 
-> gitleaks ya solo recibe parches de seguridad; su autor continúa el trabajo en [Betterleaks](https://github.com/betterleaks/betterleaks).
+```yaml
+name: secret-scan
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  trufflehog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --results=verified,unknown
+```
+
+Escanea solo los commits del PR / push. Para un barrido de toda la rama (p. ej. job semanal):
+
+```yaml
+      - name: TruffleHog (rama completa)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          base: ""
+          head: ${{ github.ref_name }}
+          extra_args: --results=verified,unknown
+```
+
+#### 2. CI: opción B — gitleaks-action
+
+Crea `.github/workflows/gitleaks.yml` (no combines este archivo con el de TruffleHog en el mismo repo, salvo el job semanal opcional):
+
+```yaml
+name: gitleaks
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+jobs:
+  scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Solo obligatorio en organizaciones de GitHub:
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+```
+
+#### 3. Qué hacer si aparece un secreto
+
+Considéralo comprometido: rótalo y revócalo. Borrarlo del último commit no basta; sigue en el historial. Reescribe o limpia el historial solo con política de equipo y, después, fuerza el re-escaneo en CI.
+
+> gitleaks ya solo recibe parches de seguridad; su autor continúa el trabajo en [Betterleaks](https://github.com/betterleaks/betterleaks). El CLI y gitleaks-action siguen siendo válidos.
 
 ### Revisión con agente: `security-review`, `security-audit` y thermos
 
@@ -471,30 +548,9 @@ Las skills se instalan con la colección del repo (paso 5) y sirven en cualquier
 
 **Cursor:** el plugin **thermos** (paso 4) añade una revisión estricta de la rama (bugs, seguridad y calidad). Úsalo como segundo eje tras `code-review`.
 
-### SAST: CodeQL y SonarQube
+### SAST: CodeQL
 
-**CodeQL (GitHub):** en el repositorio, **Settings → Advanced Security → CodeQL analysis → Set up → Default**. GitHub detecta los lenguajes y analiza cada PR y cada push a `main`; los hallazgos aparecen en la pestaña **Security** y como anotaciones en el PR.
-
-**SonarQube (Cloud o Server):** conecta el repositorio desde SonarQube Cloud o añade el escáner a tu CI y define una *quality gate* que bloquee el merge con vulnerabilidades nuevas. Para que el agente consulte los hallazgos, registra el [SonarQube MCP server](https://github.com/SonarSource/sonarqube-mcp-server) (necesita Docker y un token de usuario):
-
-```json
-{
-  "mcpServers": {
-    "sonarqube": {
-      "command": "docker",
-      "args": ["run", "--init", "--pull=always", "--rm", "-i", "-e", "SONARQUBE_TOKEN", "-e", "SONARQUBE_ORG", "sonarsource/sonarqube-mcp"],
-      "env": { "SONARQUBE_TOKEN": "<TU_TOKEN>", "SONARQUBE_ORG": "<TU_ORG>" }
-    }
-  }
-}
-```
-
-Para SonarQube Server, sustituye `SONARQUBE_ORG` por `SONARQUBE_URL` con la URL de tu servidor.
-
-- **Cualquier IDE:** añade el bloque anterior a la configuración MCP de tu agente (Claude Code, Codex y Copilot tienen ejemplos en el README del servidor).
-- **Cursor:** pégalo en `.cursor/mcp.json` o usa el botón *Install in Cursor* del README. No subas el token al repositorio: usa `~/.cursor/mcp.json` o una variable de entorno.
-
-Con los hallazgos en el contexto, pide al agente que los explique y proponga la corrección; la decisión de aplicarla sigue siendo tuya.
+**CodeQL (GitHub):** en el repositorio, **Settings → Advanced Security → CodeQL analysis → Set up → Default**. GitHub detecta los lenguajes y analiza cada PR y cada push a `main`; los hallazgos aparecen en la pestaña **Security** y como anotaciones en el PR. Con los hallazgos a la vista, pide al agente que los explique y proponga la corrección; la decisión de aplicarla sigue siendo tuya.
 
 ### Pentesting: Strix
 
@@ -516,7 +572,7 @@ En Windows, ejecútalo desde WSL. Puedes apuntar `STRIX_LLM` a OmniRoute (paso 2
 
 ### Política mínima
 
-- Ningún PR se fusiona con secretos detectados ni con vulnerabilidades nuevas de severidad alta en CodeQL o Sonar.
+- Ningún PR se fusiona con secretos detectados (job de secret-scan en rojo) ni con vulnerabilidades nuevas de severidad alta en CodeQL.
 - Los cambios en auth, pagos o datos pasan por `security-review` y por una pasada de Strix en staging.
 - Re-escanea tras cada fix para confirmar que el hallazgo desaparece.
 
@@ -649,6 +705,6 @@ Criterio: empezar ya sin ceremonia, flujo Matt; brownfield, OpenSpec; proyecto n
 - [ ] Caveman, RTK (`rtk gain`) y Context Mode (`ctx doctor`) funcionando.
 - [ ] Grafo generado con `/graphify .` y regla de Graphify activa.
 - [ ] CodeRabbit instalado en el repositorio y `.coderabbit.yaml` creado.
-- [ ] gitleaks o TruffleHog en pre-commit y CI, CodeQL (o Sonar) activo y Strix probado contra staging.
+- [ ] gitleaks en pre-commit + (gitleaks-action **o** TruffleHog) en CI; CodeQL activo; Strix probado contra staging.
 - [ ] `AGENTS.md` de una pantalla con comandos, convenciones y prohibiciones.
 - [ ] PRD, TRD, Appflow, UI/UX, esquema de backend y plan de implementación en `docs/specs/` antes de escribir código.
