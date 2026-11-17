@@ -1,0 +1,493 @@
+import { parseHumanGates, humanGateState, daysBetween, DEFAULTS, checkConfig, isDate } from "./humanGates.mjs";
+import { hasBuildScript } from "./stage.mjs";
+
+const PASS = (note) => ({ status: "PASS", note });
+const FAIL = (note) => ({ status: "FAIL", note });
+const STALE = (note) => ({ status: "STALE", note });
+const NA = (note) => ({ status: "N/A", note });
+// Tried to verify and could not (audit offline, live request failed). Never counts as passed.
+const UNKNOWN = (note) => ({ status: "UNKNOWN", note });
+
+const loc = (h) => `${h.file}:${h.line}`;
+const list = (hits, n = 5) =>
+  hits.slice(0, n).map(loc).join(", ") + (hits.length > n ? `, +${hits.length - n} more` : "");
+
+const envExample = (repo) => repo.files.find((f) => /^\.env\.(example|sample|template)$/.test(f));
+// .env, .env.local, apps/web/.env.production — but not the example/sample/template files.
+const ENV_FILE_RE = /(^|\/)\.env(\.[^/]+)?$/;
+const ENV_EXAMPLE_RE = /\.(example|sample|template)$/;
+const committedEnvFiles = (repo) => repo.tracked().filter((f) => ENV_FILE_RE.test(f) && !ENV_EXAMPLE_RE.test(f));
+
+// ---------- stage 1 ----------
+
+const WORKFLOW_RE = /^\.github\/workflows\/[^/]+\.ya?ml$|^\.gitlab-ci\.yml$/;
+const TEST_STEP_RE = /\b(npm test|npm run test|pnpm test|yarn test|bun test|node --test|vitest|jest|pytest|python -m pytest|go test|cargo test|manage\.py test|python -m unittest|tox|nox)\b/;
+const BUILD_STEP_RE = /\b(npm run build|pnpm build|pnpm run build|yarn build|bun run build|next build|vite build|tsc\b)/;
+
+/** The text of the top-level `on:` key: its own line plus every following
+ * line that is indented (or blank) until the next top-level key. */
+function triggerBlock(text) {
+  const lines = text.split("\n");
+  const start = lines.findIndex((l) => /^on:/.test(l));
+  if (start === -1) return "";
+  const block = [lines[start]];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\S/.test(lines[i])) break;
+    block.push(lines[i]);
+  }
+  return block.join("\n");
+}
+
+// pull_request_target runs with repo secrets on PRs from forks; without an environment
+// (and its required reviewers) any outside PR can reach them. GITHUB_TOKEN alone is scoped.
+function untrustedSecrets(repo, workflows) {
+  for (const wf of workflows) {
+    const text = repo.code(wf).join("\n");
+    if (!/\bpull_request_target\b/.test(triggerBlock(text)) || /^\s+environment:/m.test(text)) continue;
+    const secret = [...text.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((m) => m[1]).find((n) => n !== "GITHUB_TOKEN");
+    if (secret) return `${wf}: pull_request_target exposes secrets.${secret} to fork PRs — add an environment with required reviewers`;
+  }
+  return null;
+}
+
+function activeCI(text, gitlab) {
+  const lines = text.split("\n");
+  const removed = new Set();
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s*(?:-\s*)?if:\s*(?:false|\$\{\{\s*false\s*\}\})\s*$/.test(lines[i]) && !(gitlab && /^\s*when:\s*(manual|never)\s*$/.test(lines[i]))) continue;
+    const indent = lines[i].search(/\S/);
+    let start = i;
+    if (!/^\s*-/.test(lines[i])) {
+      for (let j = i - 1; j >= 0; j--) {
+        if (lines[j].trim() && (lines[j].search(/\S/) < indent || (lines[j].search(/\S/) === indent && /^\s*-/.test(lines[j])))) { start = j; break; }
+      }
+    }
+    const base = lines[start].search(/\S/);
+    let end = start + 1;
+    while (end < lines.length && (!lines[end].trim() || lines[end].search(/\S/) > base)) end++;
+    for (let j = start; j < end; j++) removed.add(j);
+  }
+  return lines.filter((_, i) => !removed.has(i)).join("\n");
+}
+function gate1(repo) {
+  const workflows = repo.files.filter((f) => WORKFLOW_RE.test(f));
+  if (workflows.length === 0) return FAIL("no CI workflow (.github/workflows/*.yml or .gitlab-ci.yml)");
+  const exposed = untrustedSecrets(repo, workflows);
+  if (exposed) return FAIL(exposed);
+  const needBuild = hasBuildScript(repo);
+  const problems = [];
+  for (const wf of workflows) {
+    // Comments blanked: `# npm test` is a note to self, not a step that runs.
+    const text = activeCI(repo.code(wf).join("\n"), wf === ".gitlab-ci.yml");
+    const triggers = wf === ".gitlab-ci.yml" || /(^|[\s\[,])(push|pull_request|merge_request)\b/.test(triggerBlock(text));
+    if (!triggers) { problems.push(`${wf}: no push/pull_request trigger`); continue; }
+    if (!TEST_STEP_RE.test(text)) { problems.push(`${wf}: no test step`); continue; }
+    if (needBuild && !BUILD_STEP_RE.test(text)) { problems.push(`${wf}: no build step`); continue; }
+    return PASS(`${wf} runs tests${needBuild ? " and build" : ""} on push/PR`);
+  }
+  return FAIL(problems.join("; "));
+}
+
+const DEP_CONFIG_RE = /^\.github\/dependabot\.ya?ml$|^renovate\.json5?$|^\.renovaterc(\.json)?$|^\.github\/renovate\.json5?$/;
+const SCANNER_RE = /osv-scanner|trivy-action|anchore\/scan-action|snyk\/actions|socket-github-action|@aikidosec\/ci-api-client/;
+
+// Nothing to update without a manifest (a docs-only or pre-code repo).
+const MANIFEST_RE = /(^|\/)(package\.json|requirements[^/]*\.txt|pyproject\.toml|Pipfile|go\.mod|Cargo\.toml|Gemfile|composer\.json|pom\.xml|build\.gradle(\.kts)?)$/;
+
+function gate2(repo, ctx = {}) {
+  if (!repo.files.some((f) => MANIFEST_RE.test(f))) return NA("no dependency manifest (package.json, requirements.txt, pyproject.toml, …)");
+  const config = repo.files.find((f) => DEP_CONFIG_RE.test(f))
+    ?? repo.files.find((f) => WORKFLOW_RE.test(f) && SCANNER_RE.test(repo.read(f) ?? ""));
+  if (!config) return FAIL("no .github/dependabot.yml, renovate config, or dependency-scanner workflow");
+  const a = ctx.audit;
+  if (!a) return PASS(`${config} present; audit not run (--no-audit)`);
+  const parts = a.parts ?? [a];
+  const summaries = parts.map((p) => p.nothing ? `${p.manifest ?? p.tool}: nothing to audit (${p.nothing})`
+    : p.skipped ? `${p.manifest ?? p.tool}: audit not verified: ${p.skipped}`
+    : p.findings !== undefined ? `${p.tool}: ${p.findings} known vulnerabilities`
+    : `${p.tool}: ${p.high} high, ${p.critical} critical`);
+  const skipped = parts.flatMap((p) => (p.skippedPackages ?? []).map((d) => `${d.name}: ${d.reason}`));
+  const note = `${config} present; ${[...summaries, ...skipped].join("; ")}`;
+  if (parts.some((p) => (p.findings ?? (p.high ?? 0) + (p.critical ?? 0)) > 0)) return FAIL(note);
+  if (parts.some((p) => p.skipped) || skipped.length) return UNKNOWN(note);
+  return PASS(note);
+}
+
+const ENV_IGNORE = new Set(["NODE_ENV", "CI", "PORT", "HOME", "PATH", "TZ", "NEXT_RUNTIME", "NEXT_TELEMETRY_DISABLED", "NEXT_PHASE", "VERCEL", "VERCEL_ENV", "VERCEL_URL", "VERCEL_GIT_COMMIT_SHA", "GITHUB_ACTIONS", "PYTHONPATH", "DJANGO_SETTINGS_MODULE"]);
+const ENV_READ_RE = /process\.env(?:\.([A-Z][A-Z0-9_]*)|\[["']([A-Z][A-Z0-9_]*)["']\])|os\.environ(?:\.get)?\(?\[?["']([A-Z][A-Z0-9_]*)["']|os\.getenv\(["']([A-Z][A-Z0-9_]*)["']/g;
+
+function gate3(repo) {
+  // A committed env file is a leak whatever .env.example says: adding it to .gitignore
+  // later removes nothing from history. Rotation first, history purge second.
+  const leaked = committedEnvFiles(repo);
+  if (leaked.length) {
+    const first = leaked[0];
+    const since = repo.firstCommitDate(first);
+    return FAIL(`${first} tracked in git${since ? ` since ${since}` : ""}${leaked.length > 1 ? ` (+${leaked.length - 1} more)` : ""}: rotate every key in it, then purge it from history`);
+  }
+  const reads = new Map(); // name → first location
+  for (const f of repo.sourceFiles()) {
+    // Comments blanked: "// old config: process.env.X" reads nothing.
+    repo.code(f).forEach((line, i) => {
+      for (const m of line.matchAll(ENV_READ_RE)) {
+        const name = m[1] ?? m[2] ?? m[3] ?? m[4];
+        if (!ENV_IGNORE.has(name) && !reads.has(name)) reads.set(name, `${f}:${i + 1}`);
+      }
+    });
+  }
+  if (Object.keys(repo.notScanned()).length) return UNKNOWN(`source not scanned: ${Object.keys(repo.notScanned()).join(", ")}`);
+  if (reads.size === 0) return PASS("no environment variables read in source");
+  const example = envExample(repo);
+  if (!example) return FAIL(`${reads.size} env vars read but no .env.example (first: ${[...reads.keys()].slice(0, 3).join(", ")})`);
+  if (repo.isIgnored(example)) return FAIL(`${example} is ignored by .gitignore, so nobody who clones the repo gets it: add the line !${example} (create-next-app writes .env*)`);
+  const declared = new Set((repo.read(example) ?? "").split("\n").map((l) => l.replace(/^#\s*/, "").match(/^([A-Z][A-Z0-9_]*)=/)?.[1]).filter(Boolean));
+  const missing = [...reads].filter(([name]) => !declared.has(name));
+  if (missing.length) return FAIL(`missing from ${example}: ` + missing.slice(0, 5).map(([n, at]) => `${n} (${at})`).join(", "));
+  return PASS(`${reads.size} env vars read, all in ${example}`);
+}
+
+function gate4(repo, ctx) {
+  const text = repo.read("HUMAN-GATES.md");
+  if (text === null) return FAIL("HUMAN-GATES.md missing");
+  const parsed = parseHumanGates(text);
+  const checked = checkConfig(parsed.config);
+  if (checked.errors.length) return FAIL(checked.errors.join("; "));
+  parsed.config = checked.config;
+  const state = humanGateState(parsed, ctx.today);
+  if (state.invalid.length) return FAIL(`invalid human gate date: ${state.invalid.map((l) => `${l.created} due ${l.due}`).join(", ")}`);
+  if (state.stale.length) return STALE(`${state.stale.length} open line(s) older than ${state.staleDays} days or past due: ` + state.stale.slice(0, 3).map((l) => `"${l.text}"`).join(", "));
+  return PASS(`${state.open.length} open, none stale`);
+}
+
+// ---------- stage 2 ----------
+
+const TRACKER_INIT_RE = /Sentry\.init\(|sentry_sdk\.init\(|from ["']@sentry\/|new Rollbar\(|rollbar\.init|Bugsnag\.start\(|bugsnag\.start|Honeybadger\.configure|honeybadger\.configure/;
+const DSN_KEY_RE = /^#?\s*[A-Z0-9_]*(DSN|SENTRY|ROLLBAR|BUGSNAG|HONEYBADGER)[A-Z0-9_]*=/m;
+
+// A hand-rolled path: a function that records or reports errors, plus the address the digest or
+// alert goes to. Writing errors to a table is a log, not a person, so the address is required.
+const CUSTOM_ERROR_FN_RE = /\b(export\s+)?(async\s+)?function\s+(recordError|reportError|notifyError|alertError|sendAlert|runErrorDigest|errorDigest)\b|\bconst\s+(recordError|reportError|notifyError|alertError|sendAlert)\s*=/;
+const ALERT_KEY_RE = /\b((ALERT|ERROR|ERRORS|OPS|ONCALL|ADMIN)_(EMAIL|WEBHOOK|URL)|SLACK_WEBHOOK(_URL)?|DISCORD_WEBHOOK(_URL)?)\b/;
+// Where a Cloudflare Worker or a Node app names its plain config vars.
+const CONFIG_FILES = [".env.example", ".env.sample", ".env.template", ".dev.vars.example", "wrangler.jsonc", "wrangler.json", "wrangler.toml"];
+
+// The probe reads the repo; it cannot see an alert arrive. Every gate 5 PASS says so.
+const UNTESTED = "delivery not tested — send one test error and confirm it arrives";
+const reporterName = (def) => def.text.match(CUSTOM_ERROR_FN_RE)[0].split(/\s+|=/).filter((w) => /Error|Alert|Digest/.test(w))[0];
+
+/** True when the function defined at `def` has nothing between its braces once comments are gone. */
+function hasEmptyBody(repo, def) {
+  const text = repo.code(def.file).slice(def.line - 1, def.line + 39).join("\n");
+  const open = text.match(/\)\s*(:[^{=]+)?(=>\s*)?\{/);
+  if (!open) return false;
+  const start = open.index + open[0].length;
+  for (let i = start, depth = 1; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}" && --depth === 0) return text.slice(start, i).trim() === "";
+  }
+  return false;
+}
+
+/** Whether a hand-rolled reporter is an error path: it has a body, something calls it, and the
+ * alert address named in config is read in a file on that path (one that defines or calls a
+ * reporter). It cannot tell a reporter that sends from one that only logs. `pathFiles` is that
+ * set of files. Returns { pass: note } or { fail: note }. */
+function customPath(repo, def, src, pathFiles) {
+  const fn = reporterName(def);
+  const at = `${fn} at ${loc(def)}`;
+  if (hasEmptyBody(repo, def)) return { fail: `${at} is an empty stub: it records and sends nothing` };
+  const ownDef = new RegExp(`\\bfunction\\s+${fn}\\b|\\bconst\\s+${fn}\\s*=`);
+  const called = repo.grep(new RegExp(`\\b${fn}\\s*\\(`), src).some((h) => !ownDef.test(h.text));
+  if (!called) return { fail: `${at} is never called from source: wire it into the error handler` };
+  for (const file of CONFIG_FILES) {
+    const key = (repo.read(file) ?? "").match(ALERT_KEY_RE)?.[0];
+    if (!key) continue;
+    const read = repo.grep(new RegExp(`\\b${key}\\b`), [...pathFiles])[0];
+    if (!read) return { fail: `${at}, but alert address ${key} (named in ${file}) is not read in a file that defines or calls an error reporter: nothing sends to it` };
+    return { pass: `static: ${at}, alert address ${key} in ${file}, read at ${loc(read)}; ${UNTESTED}` };
+  }
+  return { fail: `${at} but no alert address (ALERT_EMAIL, *_WEBHOOK) in ${CONFIG_FILES.slice(0, 2).join(", ")} or wrangler config: errors are logged, not delivered` };
+}
+
+function gate5(repo) {
+  const src = repo.sourceFiles();
+  const init = repo.grep(TRACKER_INIT_RE, src)[0];
+  if (init) {
+    const example = envExample(repo);
+    if (!example || !DSN_KEY_RE.test(repo.read(example) ?? "")) return FAIL(`tracker init at ${loc(init)} but no DSN key in .env.example`);
+    return PASS(`static: tracker init at ${loc(init)}, DSN named in ${example}; ${UNTESTED}`);
+  }
+  const defs = repo.grep(CUSTOM_ERROR_FN_RE, src);
+  if (!defs.length) return FAIL("no error tracker init (Sentry/Rollbar/Bugsnag/Honeybadger) and no recordError/reportError function in source");
+  const names = [...new Set(defs.map(reporterName))];
+  const pathFiles = new Set(repo.grep(new RegExp(`\\b(${names.join("|")})\\b`), src).map((h) => h.file));
+  const outcomes = defs.map((d) => customPath(repo, d, src, pathFiles));
+  const ok = outcomes.find((o) => o.pass);
+  return ok ? PASS(ok.pass) : FAIL(outcomes[0].fail);
+}
+
+const HEALTH_PATH_RE = /(^|\/)(api\/)?healthz?(\.[cm]?[jt]sx?|\/route\.[cm]?[jt]sx?|\/index\.[cm]?[jt]sx?)$/;
+// "/health" in JS/Flask/FastAPI; Django writes routes without the slash: path('health', view).
+const HEALTH_STRING_RE = /["'`]\/(api\/)?healthz?["'`]|\b(re_)?path\(\s*r?["']\^?(api\/)?healthz?\/?\$?["']/;
+
+function gate6(repo, ctx) {
+  const live = ctx.live?.health;
+  if (live) {
+    if (live.status !== 200) return FAIL(`live: ${live.status} from ${live.path ?? "health endpoint"}`);
+    let body;
+    try { body = JSON.parse(live.body); } catch { return FAIL("live: 200 but body is not JSON with a version field"); }
+    const version = body && typeof body === "object" && !Array.isArray(body) ? body.version ?? body.sha ?? body.commit ?? body.git_sha : null;
+    if (!(typeof version === "string" && version.trim() && !/^(dev|unknown|undefined|null|latest)$/i.test(version.trim())) && !(typeof version === "number" && Number.isFinite(version))) return FAIL(`live: 200 but no meaningful version field (${JSON.stringify(version)})`);
+    return PASS("live: 200 with version");
+  }
+  const byPath = repo.files.find((f) => HEALTH_PATH_RE.test(f) && !repo.isTestPath(f));
+  if (byPath) return PASS(`static: route file ${byPath} (pass --url to check it live)`);
+  const byString = repo.grep(HEALTH_STRING_RE, repo.sourceFiles())[0];
+  if (byString) return PASS(`static: health route at ${loc(byString)} (pass --url to check it live)`);
+  return FAIL("no /health route found");
+}
+
+const BACKUP_RE = /\b(pg_dump|mysqldump|mongodump|sqlite3 .* \.backup|litestream|backup)\b/i;
+// The drill date sits under a label: "Date: 2026-09-01", "Viimane proov: 2026-09-01". A date in a
+// file name or a sentence has no label, and a label that names a plan is not a drill that happened.
+const DRILL_DATE_RE = /^[\s>*_-]*([^\n:]{1,60}):[\s*_]*(\d{4}-\d{2}-\d{2})\b/gm;
+const PLANNED_RE = /next|plan|due|schedul|upcoming|target|järgmine|tähtaeg/i;
+const lastDrillDate = (text) => [...text.matchAll(DRILL_DATE_RE)].find((m) => !PLANNED_RE.test(m[1]))?.[2];
+
+function gate7(repo, ctx) {
+  const candidates = repo.files.filter((f) => /^\.github\/workflows\/|^scripts\/|^supabase\/|^\.gitlab-ci\.yml$/.test(f));
+  const job = repo.grep(BACKUP_RE, candidates)[0];
+  if (!job) return FAIL("no backup job (workflow or script mentioning pg_dump/mysqldump/mongodump/backup)");
+  const drill = repo.read("docs/ops/restore-drill.md");
+  if (drill === null) return FAIL(`backup job at ${loc(job)} but no docs/ops/restore-drill.md`);
+  const date = lastDrillDate(drill);
+  if (!date) return FAIL("docs/ops/restore-drill.md has no dated drill: after running one, write it on a line of its own (Date: YYYY-MM-DD)");
+  const max = ctx.config.drill_max_days ?? DEFAULTS.drill_max_days;
+  if (!isDate(date)) return FAIL(`invalid restore drill date: ${date}`);
+  const age = daysBetween(date, ctx.today);
+  if (age < 0) return FAIL(`restore drill date ${date} is in the future`);
+  if (age > max) return STALE(`restore drill dated ${date} is ${age} days old (max ${max})`);
+  return PASS(`backup job at ${loc(job)}; restore drill ${date} (${age} days ago)`);
+}
+
+function gate8(repo) {
+  const text = repo.read("docs/ops/rollback.md");
+  if (text === null) return FAIL("no docs/ops/rollback.md");
+  const missing = [["code", /\b(code|deploy|release)\b/i], ["schema", /\b(schema|migration)\b/i], ["data", /\bdata\b/i]]
+    .filter(([, re]) => !re.test(text)).map(([n]) => n);
+  return missing.length ? FAIL(`docs/ops/rollback.md does not cover: ${missing.join(", ")}`) : PASS("docs/ops/rollback.md covers code, schema and data");
+}
+
+const CALL_RE = /\bfetch\(|\baxios(\.[a-z]+)?\(|\brequests\.(get|post|put|patch|delete|head|request)\(|\bhttpx\.(get|post|put|patch|delete|head|request|Client)\(|\burllib\.request\.urlopen\(/;
+const GUARD_RE = /\bsignal\b|\btimeout\b|AbortSignal|AbortController/;
+// fetch('/api/x') or fetch(`/api/${id}`) is same-origin, not an external call.
+const SAME_ORIGIN_RE = /\bfetch\(\s*[`'"]\/(?!\/)/;
+// Cloudflare Workers: `env.ASSETS.fetch(req)` is a binding, `.fetch(request, env, ctx)` hands the
+// request to another handler, and `async fetch(request, env, ctx) {` defines one. None leaves the
+// platform, so none needs a timeout.
+const NOT_A_CALL_RE = /\benv\.[A-Za-z_]+\.fetch\(|\.fetch\([^)]*\benv\b|\b(async\s+|function\s+)fetch\s*\(|\bfetch\([^)]*\)\s*(:[^{]*)?\{\s*$/;
+
+function gate9(repo) {
+  const violations = [];
+  let calls = 0;
+  for (const f of repo.sourceFiles()) {
+    // Comments blanked: "// TODO add timeout" two lines down is not a guard.
+    const lines = repo.code(f);
+    for (let i = 0; i < lines.length; i++) {
+      if (!CALL_RE.test(lines[i]) || SAME_ORIGIN_RE.test(lines[i]) || NOT_A_CALL_RE.test(lines[i])) continue;
+      calls++;
+      const window = lines.slice(i, i + 7).join("\n");
+      if (!GUARD_RE.test(window)) violations.push({ file: f, line: i + 1 });
+    }
+  }
+  if (!violations.length && Object.keys(repo.notScanned()).length) return UNKNOWN(`source not scanned: ${Object.keys(repo.notScanned()).join(", ")}`);
+  if (calls === 0) return PASS("no external HTTP calls found in source");
+  if (violations.length) return FAIL(`${violations.length} of ${calls} calls without a timeout/signal: ${list(violations)}`);
+  return PASS(`${calls} external calls, all with a timeout or abort signal`);
+}
+
+// ---------- stage 3 ----------
+
+// Files the framework loads by convention; any other file counts only when imported.
+const ENTRY_RE = /(^|\/)(middleware|proxy|next\.config|settings|urls|wsgi|asgi|manage|server|app|main|index|route|page|layout|_app|_document)\.[^/]+$|(^|\/)(vercel\.json|netlify\.toml|_headers)$/;
+const stemOf = (f) => f.split("/").pop().replace(/\.[^.]+$/, "");
+
+/** A helper is evidence only if the framework loads it or another source file imports it:
+ * `fix --write` drops lib/server/csrf.ts in place, and until middleware imports it nothing is protected. */
+const deadFiles = new WeakMap(); // repo → files known to be unreachable: gate 11 asks about every file.
+
+function wired(repo, file) {
+  if (!deadFiles.has(repo)) deadFiles.set(repo, new Set());
+  const dead = deadFiles.get(repo);
+  const seen = new Set([file]);
+  for (const f of seen) {
+    if (ENTRY_RE.test(f)) return true;
+    if (dead.has(f)) continue;
+    const importRe = new RegExp(`\\b(import|require|from)\\b.*["'./\\s]${stemOf(f)}\\b`);
+    for (const h of repo.grep(importRe, repo.sourceFiles())) if (h.file !== f) seen.add(h.file);
+  }
+  for (const f of seen) dead.add(f); // closed under importers: none of them reaches an entry file
+  return false;
+}
+const unwired = (file) => `${file} has the check but is not reachable from a recognized entry point — wire it up`;
+
+const CSRF_RE = /csrf|headers\.get\(["']origin["']\)|headers\[["']origin["']\]|request\.headers\.get\(["']origin["']\)|CSRF_TRUSTED_ORIGINS|CsrfViewMiddleware|csurf|sameSite:\s*["']strict["']/i;
+
+function gate10(repo, ctx) {
+  const live = ctx.live?.csrf ?? null;
+  const hits = repo.grep(CSRF_RE, repo.sourceFiles());
+  const hit = hits.find((h) => wired(repo, h.file));
+  const staticResult = hit
+    ? PASS(`static: origin/CSRF check at ${loc(hit)} (loading and mutation-route protection not verified)`)
+    : FAIL(hits.length ? unwired(hits[0].file) : "no Origin/Referer or CSRF check in source");
+  if (live && ![404, 405].includes(live.status)) {
+    staticResult.note += `; live: cross-origin POST to the health route → ${live.status}, inconclusive (not a mutation route)`;
+  }
+  if (live) return UNKNOWN(`${staticResult.note}; health POST is inconclusive for mutation-route CSRF protection`);
+  return staticResult;
+}
+
+function validFrames(csp) {
+  const value = csp.match(/(?:^|;)\s*frame-ancestors\s+([^;]+)/i)?.[1]?.trim();
+  return Boolean(value && value.split(/\s+/).every((v) => /^('self'|'none'|https?:\/\/[^*\s]+)$/.test(v)));
+}
+const HEADER_CHECKS = [
+  ["Strict-Transport-Security", /strict-transport-security|SECURE_HSTS_SECONDS/i],
+  ["frame-ancestors", /frame-ancestors|X-Frame-Options|X_FRAME_OPTIONS/i],
+  ["nosniff", /nosniff|SECURE_CONTENT_TYPE_NOSNIFF/i],
+];
+
+function gate11(repo, ctx) {
+  const live = ctx.live?.headers;
+  if (live) {
+    const missing = [];
+    if (!/\bmax-age\s*=\s*[1-9]\d*\b/i.test(live["strict-transport-security"] ?? "")) missing.push(`Strict-Transport-Security (${live["strict-transport-security"] ?? "absent"})`);
+    if (!validFrames(live["content-security-policy"] ?? "") && !/^(DENY|SAMEORIGIN)$/i.test(live["x-frame-options"] ?? "")) missing.push("frame-ancestors");
+    if (!/^nosniff$/i.test(live["x-content-type-options"] ?? "")) missing.push("nosniff");
+    // A 404 or JSON response carries no framing policy because it needs none: judge
+    // frame-ancestors only on an HTML page (headersHtml is absent in older live results).
+    if (missing.length === 1 && missing[0] === "frame-ancestors" && ctx.live.headersHtml === false) {
+      return UNKNOWN(`live: ${ctx.live.headersFrom} is not an HTML page, frame-ancestors not checked (HSTS and nosniff present); pass --url to a page`);
+    }
+    if (!missing.length && !ctx.live.finalUrl?.startsWith("https://")) return UNKNOWN("live: HSTS requires https transport");
+    return missing.length ? FAIL(`live: missing ${missing.join(", ")}`) : PASS("live: HSTS, frame-ancestors, nosniff present");
+  }
+  const files = repo.sourceFiles().concat(repo.files.filter((f) => /^(next\.config\.[cm]?[jt]s|vercel\.json|netlify\.toml|_headers)$/.test(f)));
+  const wiredFiles = files.filter((f) => wired(repo, f));
+  if (repo.grep(/helmet\(/, wiredFiles)[0]) return PASS("static: helmet() in use (pass --url to verify)");
+  const missing = HEADER_CHECKS.filter(([name, re]) => !repo.grep(re, wiredFiles).some((h) => {
+    const line = repo.code(h.file)[h.line - 1];
+    if (name === "Strict-Transport-Security") return !/SECURE_HSTS_SECONDS\s*=\s*0\b|max-age=0\b/i.test(line);
+    if (name === "frame-ancestors") return !/X_FRAME_OPTIONS\s*=\s*["']\s*["']|frame-ancestors\s+(?:\*|https?:)(?:["';\s]|$)/i.test(line);
+    return !/SECURE_CONTENT_TYPE_NOSNIFF\s*=\s*False/i.test(line);
+  })).map(([n]) => n);
+  if (!missing.length) return PASS("static: HSTS, frame-ancestors, nosniff configured (pass --url to verify)");
+  const orphan = files.find((f) => !wiredFiles.includes(f) && HEADER_CHECKS.some(([, re]) => repo.grep(re, [f])[0]));
+  return FAIL(`static: not set anywhere: ${missing.join(", ")}` + (orphan ? `; ${unwired(orphan)}` : ""));
+}
+
+const SIZE_LIMIT_RE = /\.max\(\d|maxLength|max_length\s*=|\blimit:\s*["']\d+[kKmM]?b["']|bodyLimit|DATA_UPLOAD_MAX_MEMORY_SIZE|MaxBytes|max_content_length|MAX_CONTENT_LENGTH/;
+// A bare "prune"/"cleanup" mention (e.g. a Docker cache-prune CI step) is not evidence of log
+// retention on its own — it must be paired, on the same line or the next 3, with something that
+// names an interval, a schedule, or an actual delete.
+const RETENTION_RE = /\b(retention|cleanup|clean_up|sweep|purge|prune|vacuum)\b|delete\s+from\s+\w+\s+where\s+\w+\s*</i;
+const RETENTION_COMPANION_RE = /\b(interval|older than|days|ttl|retention|delete|cron|schedule)\b/i;
+
+function findRetention(repo, files) {
+  for (const file of files) {
+    const lines = repo.code(file);
+    for (let i = 0; i < lines.length; i++) {
+      if (!RETENTION_RE.test(lines[i])) continue;
+      const window = lines.slice(i, i + 4).join("\n");
+      if (RETENTION_COMPANION_RE.test(window) && /log|audit|event/i.test(window) && /delete|purge|prune|clean|sweep/i.test(window) && !/^\s*retention-days:/.test(lines[i])) return { file, line: i + 1 };
+    }
+  }
+  return null;
+}
+
+function gate12(repo) {
+  const limit = repo.grep(SIZE_LIMIT_RE, repo.sourceFiles())[0];
+  const retentionFiles = repo.files.filter((f) => !repo.isTestPath(f) && /\.(ya?ml|sql|[cm]?[jt]sx?|py|toml)$/.test(f));
+  const retention = findRetention(repo, retentionFiles);
+  const missing = [];
+  if (!limit) missing.push("no input size limit (validator .max(), maxLength, body limit)");
+  if (!retention) missing.push("no retention/cleanup job for log tables");
+  if (missing.length) return FAIL(missing.join("; "));
+  return PASS(`static: size limit at ${loc(limit)}; retention at ${loc(retention)}; execution not verified`);
+}
+
+// English, eight other languages, or gdpr, so a localized privacy page counts as evidence too.
+const PRIVACY_NAME_RE = /privacy|privacidad|datenschutz|andmekaitse|confidentialit|integritetspolicy|tietosuoja|personvern|privatlivspolitik|gdpr/i;
+const LINK_FILE_RE = /\.([cm]?[jt]sx?|py|html|vue|svelte)$/;
+
+/** The route stem a page is reached at: the file's own name, unless it is a generic
+ * per-directory framework filename (page.tsx, +page.svelte, route.ts, index.ts), in which
+ * case the parent directory names the route. */
+function routeStem(page) {
+  const parts = page.split("/");
+  let base = parts[parts.length - 1].replace(/\.[^.]+$/, "");
+  if (/^(page|index|route|\+page|\+server|\+page\.server)$/i.test(base) && parts.length > 1) {
+    base = parts[parts.length - 2];
+  }
+  return base;
+}
+
+// Loading a template by its file path (render(request, 'core/privacy.html')) is not a link.
+const TEMPLATE_LOAD_RE = /\brender(_to_string)?\(|\btemplate_name\b|\bget_template\(|\{%\s*(include|extends)\b/;
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Where the page is linked from: a /stem URL or a Django {% url 'stem' %} first, then a
+ * Django path('stem', ...) route declaration. Test files and template loads do not count. */
+function findLink(repo, page) {
+  const stem = escapeRe(routeStem(page));
+  const linkFiles = repo.files.filter((f) => f !== page && !repo.isTestPath(f) && LINK_FILE_RE.test(f));
+  const hits = (re) => repo.grep(re, linkFiles).filter((h) => !TEMPLATE_LOAD_RE.test(h.text));
+  return hits(new RegExp(`/${stem}\\b|\\{%\\s*url\\s+['"]${stem}['"]`, "i"))[0]
+    ?? hits(new RegExp(`\\b(re_)?path\\(\\s*r?['"]\\^?${stem}\\b`, "i"))[0];
+}
+
+function gate13(repo, ctx) {
+  if (typeof ctx.config.privacy === "string") {
+    const page = ctx.config.privacy;
+    if (!repo.exists(page)) return FAIL(`privacy page from HUMAN-GATES.md not found: ${page}`);
+    const link = findLink(repo, page);
+    if (!link) return FAIL(`${page} exists but is not linked as a route (no /${routeStem(page)} reference) from any source file`);
+    return PASS(`${page}, linked from ${loc(link)}`);
+  }
+
+  const candidates = repo.files.filter((f) => PRIVACY_NAME_RE.test(f) && !repo.isTestPath(f));
+  if (candidates.length === 0) return FAIL("no file or route named privacy (in English, eight other languages, or `gdpr`) — see SKILL.md, or set `privacy:` in HUMAN-GATES.md");
+  for (const page of candidates) {
+    const link = findLink(repo, page);
+    if (link) return PASS(`${page}, linked from ${loc(link)}`);
+  }
+  const named = candidates.slice(0, 3).join(", ") + (candidates.length > 3 ? `, +${candidates.length - 3} more` : "");
+  return FAIL(`${named} not linked from any route`);
+}
+
+/** With --url, a live request that failed leaves a static PASS unverified. A static FAIL stays FAIL. */
+const liveOrUnknown = (key, gate) => (repo, ctx) => {
+  const r = gate(repo, ctx);
+  // A check that was never requested (--url without --csrf-post) is not a failed one.
+  if (!ctx.live || !(key in ctx.live) || ctx.live[key] || r.status !== "PASS") return r;
+  const err = (ctx.live.errors ?? []).find((e) => e.startsWith(key)) ?? `${key}: no response`;
+  return UNKNOWN(`live check failed (${err}); ${r.note.replace(/^static: /, "")}`);
+};
+
+export const GATES = [
+  { id: 1, name: "CI runs tests and build on every push", stage: 1, run: gate1 },
+  { id: 2, name: "Dependency security updates are automatic", stage: 1, run: gate2 },
+  { id: 3, name: "Every env var is named in .env.example", stage: 1, run: gate3 },
+  { id: 4, name: "Human-gates register is current", stage: 1, run: gate4 },
+  { id: 5, name: "Errors reach a human", stage: 2, run: gate5 },
+  { id: 6, name: "/health answers with the deployed version", stage: 2, run: liveOrUnknown("health", gate6) },
+  { id: 7, name: "Independent backup with a rehearsed restore", stage: 2, run: gate7 },
+  { id: 8, name: "Rollback runbook: code, schema, data", stage: 2, run: gate8 },
+  { id: 9, name: "External calls time out", stage: 2, run: gate9 },
+  { id: 10, name: "Cross-origin writes are refused", stage: 3, run: liveOrUnknown("csrf", gate10) },
+  { id: 11, name: "HSTS, frame-ancestors, nosniff", stage: 3, run: liveOrUnknown("headers", gate11) },
+  { id: 12, name: "Input size limits and log retention", stage: 3, run: gate12 },
+  { id: 13, name: "Privacy page matches the code", stage: 3, run: gate13 },
+];
+
+export const gateById = (id) => GATES.find((g) => g.id === id);

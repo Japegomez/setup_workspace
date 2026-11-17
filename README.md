@@ -498,6 +498,8 @@ Regla práctica:
 - **Cada PR:** `/security-review` **y** `/thermos` (o, si prefieres control fino, `/thermo-nuclear-review` + `/thermo-nuclear-code-quality-review`).
 - **Auth / pagos / datos o release:** además, `/security-audit` en modo completo.
 
+> **Coste.** Las skills que analizan **todo el repositorio** en busca de vulnerabilidades abren varios subagentes y consumen muchos tokens. `/security-audit` en modo completo lanza en paralelo reconocimiento, cazadores por clase de ataque y verificadores. No la uses en cada cambio pequeño: resérvala para autenticación, pagos, datos personales o un release. En el día a día acota `/security-review` al diff o a una carpeta.
+
 `security-review` razona sobre vulnerabilidades y secretos en el código; thermos revisa el **cambio de la rama** con barra muy alta (correctness + calidad). Se complementan: no elijas solo uno en PRs importantes.
 
 ### 4. Proceso paso a paso (por PR)
