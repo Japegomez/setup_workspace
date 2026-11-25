@@ -144,6 +144,22 @@ curl http://localhost:20128/v1/models -H "Authorization: Bearer TU_KEY"
 
 > Un tier gratuito sigue siendo un tercero: no envíes código ni datos confidenciales por proveedores cuya retención no hayas revisado.
 
+### OmniRoute frente a OpenRouter
+
+[OpenRouter](https://openrouter.ai/) resuelve el mismo problema (un endpoint compatible con OpenAI para muchos modelos), pero como servicio alojado. Comprueba precios y condiciones en su web antes de decidir.
+
+| | **OpenRouter** | **OmniRoute** |
+|---|---|---|
+| Qué es | Servicio alojado (SaaS) | Gateway open-source (MIT) que corre en tu máquina |
+| Dónde corre | En su nube: `openrouter.ai/api/v1` | En local o en Docker: `localhost:20128/v1` |
+| Credenciales | Una key de OpenRouter y créditos prepago; ellos pagan a los proveedores y cobran un margen | Tus propias cuentas y keys de cada proveedor, con sus cuotas y tiers gratuitos |
+| Enfoque | Catálogo de modelos de pago con una sola factura | Aprovechar cuotas gratuitas y fallback automático entre proveedores |
+| Privacidad | Tu tráfico pasa por un tercero más | Pasa por tu máquina, pero sigue yendo a cada proveedor |
+| Mantenimiento | Ninguno | Lo instalas y actualizas tú |
+| Cursor | Funciona sin túnel, porque ya es público | Necesita túnel si `localhost` no es accesible |
+
+Elige OpenRouter si priorizas una factura única y cero mantenimiento; OmniRoute si quieres exprimir tiers gratuitos y controlar el enrutado. Son compatibles: OpenRouter puede ser un proveedor más dentro de OmniRoute.
+
 ---
 
 ## 3. Agent Reach: acceso a web y canales
