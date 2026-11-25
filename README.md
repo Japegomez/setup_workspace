@@ -230,11 +230,72 @@ npx skills add Japegomez/cursor_skills -g -a cursor
 
 Las skills quedan disponibles en el chat como `/nombre-skill` o se activan solas cuando la tarea encaja con su descripción.
 
-Desde la raíz del proyecto, [Impeccable](https://github.com/pbakaus/impeccable) añade un lenguaje de diseño (`/impeccable audit`, `/polish`, `/critique`…) para que el agente diseñe interfaces con más criterio:
+### Guía: qué quiero hacer → qué skill uso
 
-```bash
-npx impeccable install
-```
+| Quiero… | Skill |
+|---------|-------|
+| Saber qué skill o flujo encaja con mi situación | `ask-matt` |
+| Buscar e instalar skills nuevas | `find-skills` |
+| Crear, mejorar o evaluar una skill propia | `skill-creator` |
+| Mapear y documentar un repo que no conozco | `acquire-codebase-knowledge` |
+| Consultar el codebase como un grafo de conocimiento | `graphify` |
+| Explorar el repo en solo lectura sin llenar el contexto | `caveman-explore` |
+| Entender un proyecto razonando sus decisiones de diseño | `rederive` |
+| Aprender un concepto o técnica nueva | `teach` |
+| Poner a prueba un plan o una idea con preguntas | `grilling`, `grill-me` |
+| Poner a prueba un plan y dejar ADRs y glosario escritos | `grill-with-docs` |
+| Fijar el lenguaje del dominio y registrar decisiones | `domain-modeling` |
+| Convertir la conversación en una spec en el tracker | `to-spec` |
+| Partir una spec o plan en tickets con dependencias | `to-tickets` |
+| Preparar un cuestionario para que otra persona decida | `to-questionnaire` |
+| Planificar un trabajo que no cabe en una sesión | `wayfinder` |
+| Clasificar issues y PRs externos | `triage` |
+| Configurar el tracker y las etiquetas del repo | `setup-matt-pocock-skills` |
+| Implementar a partir de una spec o tickets | `implement` |
+| Crear tests y trabajar test-first | `tdd` |
+| Prototipar algo desechable para resolver una duda de diseño | `prototype` |
+| Traspasar la conversación a otro agente | `handoff` |
+| Diagnosticar un bug o una regresión de rendimiento | `diagnosing-bugs` |
+| Investigar un fallo ambiguo antes de tocar código | `investigate-first` |
+| Refactorizar sin cambiar el comportamiento | `safe-refactor` |
+| Encontrar mejoras de arquitectura en el codebase | `improve-codebase-architecture` |
+| Revisar cambios contra los estándares del repo y la spec | `code-review` |
+| Revisar un diff con un hallazgo por línea | `caveman-review` |
+| Auditar si algo está listo para producción | `skeptic-review` |
+| Poner los cimientos antes de la primera feature | `production-skeleton` |
+| Auditar la seguridad de un codebase | `security-audit` |
+| Buscar vulnerabilidades razonando sobre el código | `security-review` |
+| Configurar y gestionar actualizaciones de dependencias | `dependabot` |
+| Escribir un mensaje de commit convencional | `conventional-commit` |
+| Nombrar una rama según la convención | `conventional-branch` |
+| Resolver un merge o rebase con conflictos | `resolving-merge-conflicts` |
+| Reducir minutos y coste de GitHub Actions | `github-actions-efficiency` |
+| Definir la dirección visual de una interfaz | `frontend-design` |
+| Construir una web inmersiva con motion y tipografía cuidada | `premium-frontend-ui` |
+| Crear o rediseñar una página sin que parezca generada por IA | `hallmark` |
+| Evitar UI genérica apoyándome en pantallas reales | `anti-ui-slop` |
+| Revisar y corregir el diseño de una web en el navegador | `web-design-reviewer` |
+| Optimizar el rendimiento de React / Next.js | `vercel-react-best-practices` |
+| Dibujar diagramas y gráficos de marca (arquitectura, flujo, ER…) | `diagram-design` |
+| Generar diagramas HTML explorables o convertir Mermaid | `archify` |
+| Explicar una idea técnica con una figura isométrica interactiva | `anatomy` |
+| Hacer un vídeo de lanzamiento del proyecto | `brag` |
+| Automatizar el navegador (formularios, capturas, tests) | `agent-browser` |
+| Leer contenido de plataformas externas (GitHub, YouTube, Reddit…) | `agent-reach` |
+| Investigar un tema con fuentes primarias y guardarlo en Markdown | `research` |
+| Optimizar la ficha de una app (ASO) | `app-store-optimization` |
+| Evaluar el riesgo de rechazo en el App Store | `app-store-review` |
+| Que el agente responda más corto | `caveman`, `ultracave` |
+| Delegar tareas pequeñas con salida comprimida | `cavecrew` |
+| Comprimir `CLAUDE.md` u otra memoria para gastar menos | `caveman-compress` |
+| Ver los comandos de Caveman | `caveman-help` |
+| Ver el consumo de tokens de la sesión | `caveman-stats` |
+| Reducir el coste de tokens aplicando arreglos | `caveman-learn` |
+| Medir el gasto en LLM de un repo | `caveman-setup` |
+| Ver en qué se va el gasto con evidencia | `caveman-evidence-review` |
+| Controlar el ciclo de vida de un experimento de optimización | `caveman-manage` |
+| Evaluar un candidato de optimización frente a una base | `caveman-optimize` |
+| Guiar paso a paso tareas que solo puede hacer una persona | `wizard` |
 
 ---
 
@@ -631,6 +692,31 @@ Bloques que conviene añadir para las herramientas de este tutorial:
 ## Prohibiciones
 - Nunca secretos ni PII en prompts. Nunca `git push --force` ni despliegues sin aprobación.
 ```
+
+### Principios de comportamiento (Karpathy)
+
+[andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills) recoge en un solo archivo las [observaciones de Andrej Karpathy](https://x.com/karpathy/status/2015883857489522876) sobre los fallos típicos de los LLM al programar: asumir sin preguntar, sobrecomplicar el código y tocar lo que no toca. El repositorio publica el contenido como `CLAUDE.md` (no hay `AGENTS.md`); es texto plano, así que sirve igual copiado a tu `AGENTS.md`. Son cuatro principios:
+
+| Principio | Evita |
+|-----------|-------|
+| **Think Before Coding** | Suposiciones silenciosas y dudas ocultas |
+| **Simplicity First** | Abstracciones y código de más |
+| **Surgical Changes** | Ediciones ajenas a la petición |
+| **Goal-Driven Execution** | Tareas sin criterio de éxito verificable |
+
+Pégalo en `AGENTS.md` (o en `CLAUDE.md`) junto a las instrucciones del proyecto:
+
+```markdown
+## Principios de comportamiento
+Sesgan hacia la cautela frente a la velocidad; en tareas triviales, usa el criterio.
+
+1. **Piensa antes de programar.** Explicita tus suposiciones y, si dudas, pregunta. Si hay varias interpretaciones, preséntalas en vez de elegir en silencio. Si existe un enfoque más simple, dilo. Si algo no está claro, para y pregunta.
+2. **Simplicidad primero.** El mínimo código que resuelve el problema: sin funciones no pedidas, sin abstracciones para un solo uso, sin configurabilidad ni manejo de errores imposibles. Si 200 líneas pueden ser 50, reescribe.
+3. **Cambios quirúrgicos.** Toca solo lo necesario: no "mejores" código, comentarios ni formato adyacentes, y respeta el estilo existente. Elimina solo lo que tu cambio dejó sin uso; el código muerto previo se menciona, no se borra. Cada línea cambiada debe salir de la petición.
+4. **Ejecución guiada por objetivos.** Convierte la tarea en criterios verificables ("arreglar el bug" → test que lo reproduce y luego pasa). En tareas de varios pasos, plan breve con su verificación por paso.
+```
+
+Funciona si hay menos cambios innecesarios en los diffs, menos reescrituras por exceso de complejidad y las preguntas llegan antes de implementar, no después del error.
 
 **Cualquier IDE:** basta con el archivo en la raíz (y opcionalmente uno por subcarpeta en monorepos; gana el más cercano al archivo editado).
 
